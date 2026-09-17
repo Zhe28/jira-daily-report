@@ -1,0 +1,129 @@
+### =====================================================================
+### autoGenDailyReport 接口测试（Jira Data Center + Tempo Timesheets v4）
+###
+### 用法（VS Code REST Client / IDEA HTTP Client 均可）：
+###   1. 把下面 @pass 改成你的 Jira 密码（代码里走环境变量 DAILYREPORT_JIRA_PASS，
+###      http 文件里只能写死，测完别外传）
+###   2. 逐段右键 "Send Request" 即可
+###   3. 日期用 {{date}}，默认 2026-09-10（昨天），可按需改
+###
+### 注意：
+###   - worklog 搜索接口必须 POST，GET 返回 405
+###   - 该接口忽略 issue 过滤条件，返回的是你当天的全部工时，看响应里
+###     issue.id 是否匹配即可
+###   - 创建工时是真实写数据！正式执行前先用搜索接口确认当天没写过
+### =====================================================================
+
+@baseUrl = http://114.215.252.122:8080
+@user = huangze
+@pass = 666666
+# Basic 头必须是 Base64(用户名:密码)，客户端不会自动编码；
+# 改密码后重算：[convert]::ToBase64String([text.encoding]::UTF8.GetBytes("huangze:666666"))
+@basicAuth = aHVhbmd6ZTo2NjY2NjY=
+@worker = JIRAUSER25336
+@tempoVersion = 4
+
+# 要测试的日期（yyyy-MM-dd，只到日期，不要带时分/时区，否则 500）
+@date = 2026-09-10
+
+# 波科AI知识库管理开发：BKAIZSKXM-5 -> issue id 155324
+@issueId = 155324
+# 德华安顾开发：DHWJBGSCXT-5 -> issue id 157007
+# @issueId = 157007
+
+
+### 1. 连通性 + 登录验证
+### 等价于代码里 TempoClient::reachable()。200 且返回你的用户 JSON 即通
+GET {{baseUrl}}/rest/api/2/myself
+Authorization: Basic {{basicAuth}}
+
+> {%
+client.test("reachable 200", function () {
+    client.assert(response.status === 200, "status=" + response.status);
+    client.log("name=" + response.body.name);
+});
+%}
+
+
+### 2. issue key -> 数字 id
+### 等价于 TempoClient::issue_id()。响应里的 "id" 是字符串（如 "155324"）
+GET {{baseUrl}}/rest/api/2/issue/BKAIZSKXM-5
+Authorization: Basic {{basicAuth}}
+
+
+### 3. 搜索某天的工时（已验证的写法）
+### 等价于 TempoClient::has_worklog_for()。
+### worker 是字符串数组；from/to 只能 yyyy-MM-dd（LocalDate），
+### 带时间或 +08:00 会 500。返回该员工当天所有 issue 的工时。
+POST {{baseUrl}}/rest/tempo-timesheets/{{tempoVersion}}/worklogs/search
+Content-Type: application/json
+Authorization: Basic {{basicAuth}}
+
+{
+    "worker": ["{{worker}}"],
+    "from": "{{date}}",
+    "to": "{{date}}"
+}
+
+> {%
+client.test("search 200", function () {
+    client.assert(response.status === 200, "status=" + response.status);
+    let logs = JSON.parse(response.body);
+    client.log("该员工 " + client.variable("date") + " 共 " + logs.length + " 条工时");
+    logs.forEach(function (w) {
+        client.log("  issueId=" + (w.issue && w.issue.id) +
+            " key=" + (w.issue && w.issue.key) +
+            " started=" + w.started +
+            " seconds=" + w.timeSpentSeconds);
+    });
+});
+%}
+
+
+### 4. 创建工时（真实写数据！⚠️）
+### 等价于 TempoClient::create_worklog()。
+### 字段契约（已对线上探针验证）：
+###   - 用 originTaskId（数字），不是 issueId
+###   - 用 timeSpentSeconds（数字），不是 timeSpent
+###   - started 必须带毫秒后缀 "yyyy-MM-dd HH:mm:ss.SSS"
+###   - 不接受 billable / locationId
+### 测试建议：timeSpentSeconds 先用 60（1分钟），验证完自己删掉
+POST {{baseUrl}}/rest/tempo-timesheets/{{tempoVersion}}/worklogs
+Content-Type: application/json
+Authorization: Basic {{basicAuth}}
+
+{
+    "originTaskId": {{issueId}},
+    "worker": "{{worker}}",
+    "started": "{{date}} 09:00:00.000",
+    "timeSpentSeconds": 60,
+    "comment": "接口手动测试，可删除"
+}
+
+> {%
+client.test("create 2xx", function () {
+    client.assert(response.status === 200 || response.status === 201,
+        "status=" + response.status + " body=" + response.body);
+});
+%}
+
+
+### =====================================================================
+### 附：AI 接口（OpenAI 兼容 /chat/completions，等价 reporter.rs 的调用）
+### =====================================================================
+
+@aiBaseUrl = http://192.168.3.7:8002/v1
+@aiKey = ebiz
+@aiModel = Qwen3.8-27B-FP8
+
+POST {{aiBaseUrl}}/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{aiKey}}
+
+{
+    "model": "{{aiModel}}",
+    "messages": [
+        { "role": "system", "content": "你是软件研发日报撰写助手。" },
+        { "role": "user", "content": "请用一句话总结：今天修复了登录超时问题。" }
+    ]
+}

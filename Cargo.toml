@@ -1,0 +1,28 @@
+[package]
+name = "daily-report"
+version = "0.1.0"
+edition = "2021"
+description = "Auto-generate daily report from git commits and fill Jira Tempo timesheets"
+license = "MIT"
+
+[[bin]]
+name = "daily-report"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "1"
+base64 = "0.22"
+dirs = "5"
+wait-timeout = "0.2"
+
+[profile.release]
+opt-level = 2

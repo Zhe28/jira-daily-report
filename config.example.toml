@@ -1,0 +1,49 @@
+# autoGenDailyReport 配置示例。
+# 复制为 config.toml 后按你的环境修改。
+# 密码两种提供方式（环境变量优先）：
+#   1. 环境变量：set DAILYREPORT_JIRA_PASS=你的jira密码
+#      (PowerShell: $env:DAILYREPORT_JIRA_PASS="你的jira密码")
+#   2. 配置文件：填写下方 jira_password（环境变量未设置时生效）
+
+jira_base_url = "http://114.215.252.122:8080"
+jira_user     = ""          # 你的 Jira/Crowd 用户名
+# jira_password = "你的jira密码"    # 可选；设了环境变量 DAILYREPORT_JIRA_PASS 时忽略
+tempo_version = 4                  # Tempo REST API 版本
+worker        = ""    # 你的 Jira 内部用户 id， 这个可以在工时表url最后一个字段获取
+
+check_time    = "13:00"            # 每天检查/补填时间
+work_start    = "09:00"            # 只收集该时间起的 commit
+work_end      = "18:00"            # 到该时间止（之后的加班手动填）
+total_daily_seconds = 28800        # 单仓库记 8h；多仓库按权重拆这 8h
+
+# 盖在 Jira 工时上的"开工时间"（started）：固定 09:00:00 起，8h 正好到 17:00。
+#   worklog_start = "09:00"   # 精确时间 → 固定写 09:00:00
+# 省略 → 回退到 work_start，按精确时间处理
+worklog_start = "09:00"
+
+log_dir       = "C:\\Users\\asdf\\Desktop\\jira-report"          # .log 输出目录
+holidays_dir  = "C:\\Users\\asdf\\Desktop\\jira-report\\holidays" # holidays-<year>.json 所在目录
+
+# OpenAI 兼容 AI 网关
+ai_base_url   = "http://127.0.0.1:8000/v1"   # 改成你的 AI endpoint
+ai_api_key    = "sk-xxx"
+ai_model      = "gpt-4o"                     # 改成你的模型名
+
+# Tempo worklog 查询接口（已验证：POST 到此路径，body 为 {"worker":[...],"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}）
+# worklog_search_path = "/rest/tempo-timesheets/4/worklogs/search"
+
+# ---------- git 提交者身份（按提交者邮箱过滤，只统计你的提交）----------
+# 优先级：[[repos]].git_email > 顶层 git_email > 仓库级 git config user.email > 全局 git config user.email
+# 任一仓库四处都解析不到时，程序启动报错退出。
+# git_email = "you@corp.com"
+
+# 一个仓库一个本地路径一个 issue（可多段）
+[[repos]]
+local_path = "D:\\work\\poc-knowledge"
+issue_key  = "BKAIZSKXM-5"
+# 该仓库单独指定提交者邮箱（覆盖顶层 git_email）
+# git_email = "you@corp.com"
+
+[[repos]]
+local_path = "D:\\work\\duhua-risk"
+issue_key  = "DHWJBGSCXT-5"

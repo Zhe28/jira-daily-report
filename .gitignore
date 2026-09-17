@@ -1,0 +1,5 @@
+/target
+config.toml
+*.log
+desktop-jira-report/
+jira-report/

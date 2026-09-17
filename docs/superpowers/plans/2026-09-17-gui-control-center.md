@@ -1232,3 +1232,4 @@ git commit -m "docs: README 增补 GUI 构建链/使用说明/故障排查；con
 - **Task 2**：`DayRecord` 三个字段按修订计划改 `pub`（`status` handler 要跨模块读）；`mark_skipped` + `pipeline::save_skip` 按计划。
 - **Task 3**：计划里 Step 1 测试原样在 Rust 2021 下 E0382（`h` move 进闭包后又 `h.get()`），改为 `let h2 = h.clone()` 后通过；语义不变。
 - **Task 4**：`prune_old_logs` 按计划。偏离计划一处：本机 tracing-appender 0.2.5 的 builder 实际 API 是 `filename_prefix/filename_suffix/build(dir)`，生成文件名为 `prefix.date.suffix`（如 `daemon-.2026-09-17.log`），与 spec 要求的 `daemon-YYYY-MM-DD.log` 不符；且 `WorkerGuard` 不带生命周期、builder 无 `parent`/`suffix` 方法。改用最小自实现 `DailyLogFile`（`impl io::Write`，按天换文件）套 `tracing_appender::non_blocking` + 自写 `MultiWriter` 双写，命名与清理逻辑完全对齐 spec。
+- **Task 5**：actix 4.15 实测两处与计划不符：(a) `App<T>` 泛型参数是 endpoint factory（`AppEntry`，私有），`build_app` 返回类型必须写 `actix_web::App`（`pub type App = App<AppEntry>`）；(b) `web::Data<T>` 是私有字段 tuple struct，handler 参数不能用 `web::Data(ctx): web::Data<WebCtx>` 模式解构（E0532），改为直接收 `ctx: web::Data<WebCtx>`。计划文档中相应代码块按此理解执行。

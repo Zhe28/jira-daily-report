@@ -19,6 +19,7 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
+actix-web = "4"
 anyhow = "1"
 thiserror = "1"
 base64 = "0.22"

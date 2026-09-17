@@ -3,3 +3,5 @@ config.toml
 *.log
 desktop-jira-report/
 jira-report/
+crates/daemon/assets/web/*
+!crates/daemon/assets/web/.placeholder

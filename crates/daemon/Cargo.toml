@@ -23,6 +23,3 @@ thiserror = "1"
 base64 = "0.22"
 dirs = "5"
 wait-timeout = "0.2"
-
-[profile.release]
-opt-level = 2

@@ -760,3 +760,475 @@ Expected: 全部 PASS。
 git add crates/daemon
 git commit -m "feat(web): actix-web 骨架 + /api/health + /api/status"
 ```
+
+---
+
+### Task 6: 配置读写 API（GET 掩码 / PUT 校验+沿用+原子写+热生效）
+
+**Files:**
+- Modify: `crates/daemon/src/config.rs`（`Config`/`Repo` derive 加 `Serialize`；`jira_password` 加 `#[serde(default, skip_serializing_if = "Option::is_none")]`）
+- Create: `crates/daemon/src/web/config_io.rs`
+- Modify: `crates/daemon/src/web/mod.rs`（`pub mod config_io;`；`WebCtx` 扩字段；`build_app` 追加 `/api/config` 路由）
+- Modify: `crates/daemon/src/web/api.rs`（`config_get` / `config_put` handler）
+
+**Interfaces:**
+- Consumes: Task 3 `HotConfig`、Task 5 `WebCtx`/`build_app`
+- Produces:
+  - `WebCtx` 追加字段：`pub last: Arc<std::sync::Mutex<LastRun>>`、`pub ai: std::sync::RwLock<Arc<dyn crate::reporter::AIClient>>`、`pub store: std::sync::RwLock<Arc<dyn crate::pipeline::WorklogStore>>`（`LastRun` 定义在 Task 7 的 `web/mod.rs`；本任务先占位定义 `LastRun` 骨架 `#[derive(Default, Clone, Serialize)] pub struct LastRun { date: String, .. }`，Task 7 补全）
+  - `web::config_io::read_for_api(cfg: &Config) -> serde_json::Value` — 序列化后抹掉 `jira_password`（`null`→省略）、`ai_api_key` 置 `""`，并附 `jira_password_configured: bool`、`ai_api_key_configured: bool`
+  - `web::config_io::write(path: &Path, hot: &HotConfig, old: &Config, incoming: serde_json::Value) -> anyhow::Result<Config>` — 1) 合并敏感字段（请求中为空/省略 → 沿用 `old`）；2) `Config::validate()` + `check_git_identity()`；3) 密码最终可解析（`jira_password()` 非空，否则报"Jira 密码未找到"）；4) 原子写 `config.toml.tmp` → `rename`；5) `hot.set(cfg)`。任何校验失败发生在写盘之前；写盘失败不留 `.tmp`
+  - `web::api::config_get` / `web::api::config_put` — PUT 成功 `200 {"ok":true}` 并重建客户端写入 `ctx.ai`/`ctx.store`（`OpenAiClient`/`TempoClient::new`，从新配置）；失败 `400 {"error":"…"}`
+  - `web::config_io::build_clients(cfg: &Config) -> (Arc<dyn AIClient>, Arc<dyn WorklogStore>)` — 从 `main.rs::build_clients` 原样搬入，`main.rs` 改调它（CLI 分支行为不变）
+
+- [ ] **Step 1: 写失败测试**（`web/config_io.rs` 的 `mod tests`；辅助函数 `tmp()`/`base_cfg()` 复制 api.rs 测试里的同款）
+
+```rust
+#[test]
+fn read_for_api_masks_secrets() {
+    let mut c = base_cfg(&tmp());
+    c.jira_password = Some("s3cret".into());
+    c.ai_api_key = "sk-live".into();
+    let v = read_for_api(&c);
+    assert_eq!(v["jira_password"], serde_json::Value::Null, "响应里 jira_password 必须是 null/省略");
+    assert_eq!(v["ai_api_key"], "");
+    assert_eq!(v["jira_password_configured"], true);
+    assert_eq!(v["ai_api_key_configured"], true);
+}
+
+#[test]
+fn write_persists_and_hot_applies() {
+    let d = tmp();
+    let mut c = base_cfg(&d);
+    c.jira_password = Some("old-pass".into());
+    c.ai_api_key = "old-key".into();
+    c.repos = vec![crate::config::Repo { local_path: d.clone(), issue_key: "A-1".into(), git_email: Some("t@t.com".into()) }];
+    let p = d.join("config.toml");
+    std::fs::write(&p, toml::to_string_pretty(&c).unwrap()).unwrap();
+    let hot = HotConfig::new(c.clone());
+
+    let mut in_ = serde_json::to_value(&c).unwrap();
+    in_["check_time"] = "23:45".into();
+    in_["jira_password"] = serde_json::Value::Null;   // 省略 → 沿用
+    in_["ai_api_key"] = serde_json::json!("");        // 空串 → 沿用
+    let new = write(&p, &hot, &c, in_).unwrap();
+    assert_eq!(new.check_time, "23:45");
+    assert_eq!(hot.get().check_time, "23:45");
+    let on_disk = Config::load(&p).unwrap();
+    assert_eq!(on_disk.check_time, "23:45");
+    assert_eq!(on_disk.jira_password.as_deref(), Some("old-pass"));
+    assert_eq!(on_disk.ai_api_key, "old-key");
+    assert!(!d.join("config.toml.tmp").exists());
+}
+
+#[test]
+fn write_rejects_bad_time_and_leaves_file_untouched() {
+    let d = tmp();
+    let c = base_cfg(&d);
+    c.repos = vec![crate::config::Repo { local_path: d.clone(), issue_key: "A-1".into(), git_email: Some("t@t.com".into()) }];
+    let p = d.join("config.toml");
+    std::fs::write(&p, toml::to_string_pretty(&c).unwrap()).unwrap();
+    let before = std::fs::read_to_string(&p).unwrap();
+    let hot = HotConfig::new(c.clone());
+    let mut in_ = serde_json::to_value(&c).unwrap();
+    in_["check_time"] = "25:99".into();
+    assert!(write(&p, &hot, &c, in_).is_err());
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+    assert_eq!(hot.get().check_time, "13:00");
+    assert!(!d.join("config.toml.tmp").exists());
+}
+
+#[test]
+fn write_rejects_missing_password_everywhere() {
+    let d = tmp();
+    let c = base_cfg(&d); // jira_password=None
+    c.repos = vec![crate::config::Repo { local_path: d.clone(), issue_key: "A-1".into(), git_email: Some("t@t.com".into()) }];
+    let p = d.join("config.toml");
+    let hot = HotConfig::new(c.clone());
+    let in_ = serde_json::to_value(&c).unwrap();
+    let r = std::panic::catch_unwind(move || write(&p, &hot, &c, in_));
+    assert!(r.is_err() || r.unwrap().is_err(), "env 无密码 + 文件无密码时 PUT 必须失败");
+}
+```
+
+注：`write` 内部 `validate()` 会读 `DAILYREPORT_JIRA_PASS` 环境变量（并行测试干扰）——最后一个测试用 `catch_unwind` 包一层仅容忍 panic 与否，断言语义以"不落盘"为准；若实现选择 `bail!` 则断言 `is_err()` 即可（Step 3 确定后按实际收紧）。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+cargo test --lib web::config_io::
+```
+Expected: 编译错误（`config_io` 不存在）。
+
+- [ ] **Step 3: 实现**
+
+`config.rs`：`Config`/`Repo` 加 `Serialize`；`jira_password` 改
+`#[serde(default, skip_serializing_if = "Option::is_none")]`（其余默认值函数已是 `pub fn` 的保持不动；`Repo.git_email` 已是 `#[serde(default)]` 兼容）。
+
+`web/mod.rs`：`pub mod config_io;`；`WebCtx` 追加三字段（`last`/`ai`/`store`）；`LastRun` 先定义骨架（`date: String` + `#[serde(skip_serializing_if = "Option::is_none")] error: Option<String>`，Task 7 再补 outcome 字段）；`build_app` 追加 `.route("/api/config", web::get().to(api::config_get)).route("/api/config", web::put().to(api::config_put))`。
+
+`web/api.rs`：
+
+```rust
+/// GET /api/config — 敏感字段不回显。
+pub async fn config_get(web::Data(ctx): web::Data<WebCtx>) -> HttpResponse {
+    HttpResponse::Ok().json(config_io::read_for_api(&ctx.hot.get()))
+}
+
+/// PUT /api/config — 校验 → 沿用敏感字段 → 原子写盘 → 热生效 → 重建客户端。
+pub async fn config_put(web::Data(ctx): web::Data<WebCtx>, body: web::Json<serde_json::Value>) -> HttpResponse {
+    let old = ctx.hot.get();
+    match config_io::write(&ctx.config_path, &ctx.hot, &old, body.into_inner()) {
+        Ok(new) => {
+            let (ai, store) = config_io::build_clients(&new);
+            *ctx.ai.write().unwrap_or_else(|e| e.into_inner()) = ai;
+            *ctx.store.write().unwrap_or_else(|e| e.into_inner()) = store;
+            tracing::info!("配置已保存并热生效");
+            HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+```
+
+`config_io.rs` 按 Interfaces 实现；`build_clients` 从 `main.rs` 搬入（`main.rs` 内原函数改为 `daily_report::web::config_io::build_clients` 转发或直接改调用点，二选一，CLI 行为不变）。
+
+`main.rs` 常驻分支构造 `WebCtx` 时同步补 `last`/`ai`/`store`（本任务 main.rs 尚未启动 web，仅确保字段存在可编译：暂用 `Arc::new(Mutex::new(LastRun::default()))` 等占位，Task 9 真正接线）。
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+cargo test --lib web::
+```
+Expected: 全 PASS。
+
+- [ ] **Step 5: 构建 + 全量测试 + Commit**
+
+```bash
+cargo build && cargo test
+git add crates/daemon
+git commit -m "feat(web): 配置读写 API——GET 掩码敏感字段，PUT 校验/沿用/原子写/热生效 + 客户端重建"
+```
+
+---
+
+### Task 7: LastRun 运行状态 + scheduler 完成回调 + status 扩展
+
+**Files:**
+- Modify: `crates/daemon/src/web/mod.rs`（`LastRun` 补全 + `from_outcome`）
+- Modify: `crates/daemon/src/scheduler.rs`（`run_for`/`run_resident` 增加 `on_done` 回调参数）
+- Modify: `crates/daemon/src/web/api.rs`（`StatusView` 加 `last_run` 字段）
+- Modify: `crates/daemon/src/main.rs`（常驻分支接线回调）
+
+**Interfaces:**
+- Consumes: Task 6 `WebCtx`（含 `last`）、Task 2 `State`、`pipeline::DayOutcome`
+- Produces:
+  - `web::LastRun`（补全，`#[derive(Default, Clone, Serialize)]`）：
+    ```
+    date: String            // "YYYY-MM-DD"；"" = 尚无记录
+    error: Option<String>
+    skipped_reason: Option<String>
+    created: Vec<(String, u64, u64)>     // (issue, seconds, worklog_id)
+    planned: Vec<(String, u64)>
+    skipped_existing: Vec<String>
+    failed: Vec<(String, String)>
+    ```
+  - `LastRun::from_outcome(o: &DayOutcome, err: Option<&str>) -> Self`（`date = scheduler::yesterday()` 格式化）
+  - `scheduler::run_resident(hot, ai, store, on_done: Box<dyn Fn(pipeline::DayOutcome, Option<String>) + Send + Sync>)`；`run_for` 同签名透传；`Ok` → `on_done(outcome, None)`，`Err` → `on_done(DayOutcome::default(), Some(msg))`（notify 保留）
+  - `StatusView` 加 `pub last_run: Option<LastRun>`（`last.date == ""` 时 `None`）
+
+- [ ] **Step 1: 写失败测试**（`web/api.rs` tests 追加）
+
+```rust
+#[actix_web::test]
+async fn status_includes_last_run_after_callback() {
+    let d = tmp();
+    let ctx = Arc::new(WebCtx { hot: Arc::new(HotConfig::new(base_cfg(&d))),
+        config_path: d.join("config.toml"),
+        last: Arc::new(std::sync::Mutex::new(crate::web::LastRun::default())),
+        ai: std::sync::RwLock::new(mock_ai()),
+        store: std::sync::RwLock::new(mock_store()) });
+    let app = test::init_service(build_app(ctx.clone())).await;
+    let mut o = crate::pipeline::DayOutcome::default();
+    o.created.push(("A-1".into(), 28800u64, 7u64));
+    *ctx.last.lock().unwrap() = crate::web::LastRun::from_outcome(&o, None);
+
+    let req = actix_web::test::TestRequest::get().uri("/api/status").to_request();
+    let text = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
+    let body: serde_json::Value = serde_json::from_slice(&text).unwrap();
+    assert_eq!(body["last_run"]["created"][0][0], "A-1");
+    assert_eq!(body["last_run"]["created"][0][1], 28800);
+    assert!(body["last_run"]["error"].is_null());
+    let _ = std::fs::remove_dir_all(&d);
+}
+```
+
+（`mock_ai()`/`mock_store()`：tests 内最小 `impl AIClient`/`impl WorklogStore`，照抄 `pipeline::tests` 的 MockAi/MockStore 骨架。）
+
+- [ ] **Step 2: 跑测试确认失败**（`cargo test --lib web::`，`last_run`/`from_outcome` 不存在）
+
+- [ ] **Step 3: 实现**
+
+`web/mod.rs` `LastRun` 补全 + `from_outcome`；`api.rs` `StatusView` 加字段并在 `status` handler 里 `let last = ctx.last.lock()...; last.date.is_empty() → None else Some(clone)`；`scheduler.rs` 按 Interfaces 加回调参数；`main.rs` 常驻分支：
+
+```rust
+let last = ctx.last.clone();
+let on_done: Box<dyn Fn(pipeline::DayOutcome, Option<String>) + Send + Sync> = Box::new(move |o, e| {
+    let mut g = last.lock().unwrap_or_else(|x| x.into_inner());
+    *g = crate::web::LastRun::from_outcome(&o, e.as_deref());
+});
+scheduler::run_resident(hot, ai, store, on_done);
+```
+
+（`run --date`/`fill` 分支不调 `run_resident`，不受影响。）
+
+- [ ] **Step 4: 构建 + 全量测试**
+
+```bash
+cargo build && cargo test
+```
+Expected: 全绿。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/daemon
+git commit -m "feat(web): LastRun 运行状态 + 调度完成回调，status 返回最近一次执行摘要"
+```
+
+---
+
+### Task 8: rust-embed 静态资源 + SPA fallback（未构建降级提示）
+
+**Files:**
+- Modify: `crates/daemon/Cargo.toml`（加 `rust-embed = "8"`）
+- Create: `crates/daemon/src/web/ui.rs`
+- Modify: `crates/daemon/src/web/mod.rs`（`pub mod ui;`；`build_app` 追加 catch-all 路由）
+
+**Interfaces:**
+- Consumes: `crates/daemon/assets/web/`（Task 1 已建目录 + `.placeholder`）
+- Produces:
+  - `GET /` → 内嵌 `index.html`；`GET /assets/...` 等 → 对应内嵌文件（Content-Type 按扩展名：`html/js/css/svg/png/ico/json`）；其余路径 → `index.html`（SPA 兜底）
+  - 内嵌资源中无 `index.html`（前端未构建）→ 所有非 `/api/` GET 返回 `200 text/plain; charset=utf-8`：`前端未构建，请先运行 npm --prefix web run build`（不 404，不阻止启动，spec §5）
+  - `build_app` 中 catch-all 挂在 `/api` 路由**之后**（actix 按声明顺序匹配）
+
+- [ ] **Step 1: 写失败测试**（`web/ui.rs` 的 `mod tests`）
+
+```rust
+#[actix_web::test]
+async fn spa_degrades_when_frontend_not_built() {
+    // 开发期 assets/web/ 只有 .placeholder → 期望降级文本（Task 10 构建前端后此断言改为命中 index.html）
+    let d = tmp();
+    let ctx = Arc::new(WebCtx { /* 同 Task 7 测试的构造 */ });
+    let app = test::init_service(build_app(ctx)).await;
+    for uri in ["/", "/config", "/assets/whatever.js"] {
+        let req = actix_web::test::TestRequest::get().uri(uri).to_request();
+        let resp = actix_web::test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200, "uri {uri} 不应 404");
+    }
+    let req = actix_web::test::TestRequest::get().uri("/").to_request();
+    let body = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
+    let s = String::from_utf8_lossy(&body).into_owned();
+    assert!(s.contains("前端未构建") || s.to_lowercase().contains("<!doctype html"), "body: {s}");
+}
+```
+
+- [ ] **Step 2: 跑测试确认失败**（`cargo test --lib web::ui::`，`ui` 模块不存在）
+
+- [ ] **Step 3: 实现**
+
+```rust
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets/web/"]
+struct Assets;
+
+pub async fn spa(path: web::Path<String>) -> HttpResponse {
+    let rel = path.into_inner();
+    // 先精确命中（含空 rel → index.html），否则回退 index.html；
+    // index.html 也不存在 → 200 降级文本页。
+    // 注意：rel 含 ".." 时直接回退 index.html（防路径逃逸；rust-embed 本身不含 .. 条目）。
+}
+```
+
+`build_app` 追加：`.route("/{tail:.*}", web::get().to(ui::spa))`（注意 actix 的 catch-all 写法，实测为 `web::resource("/{tail:.*}")`，以编译与测试为准）。
+
+- [ ] **Step 4: 构建 + 全量测试**
+
+```bash
+cargo build && cargo test
+```
+Expected: 全绿。此后 exe 可单独分发（浏览器打开为降级提示页）。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/daemon
+git commit -m "feat(web): rust-embed 静态资源 + SPA fallback，前端未构建时 200 降级提示"
+```
+
+---
+
+### Task 9: 常驻分支接线（web 绑定 127.0.0.1:8765 + 托盘 + `--no-gui`）
+
+**Files:**
+- Modify: `crates/daemon/Cargo.toml`（加 `tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`、`tray-icon = "0.19"`、`webbrowser = "1"`）
+- Create: `crates/daemon/src/tray.rs`
+- Modify: `crates/daemon/src/lib.rs`（`pub mod tray;`）
+- Modify: `crates/daemon/src/main.rs`（`Cmd::Run` 加 `--no-gui`；常驻分支真正接线）
+
+**Interfaces:**
+- Consumes: `web::build_app`/`WebCtx`（Task 5–8）、`config_io::build_clients`（Task 6）
+- Produces:
+  - `tray::spawn(url: &str) -> anyhow::Result<()>` — 托盘图标（程序化 32×32 RGBA 蓝色圆点，`Icon::from_rgba`，不引入图标文件）+ 菜单 `打开 UI`（id `open-ui` → `webbrowser::open(url)`）/ `退出`（id `quit` → `std::process::exit(0)`）；独立线程轮询 `MenuEvent::receiver()`（`recv_timeout(100ms)` 循环）
+  - `run --no-gui`：跳过 web 与托盘，纯命令行常驻（日志双写行为不变）
+  - 端口 8765 被占用 → `tracing::error!("Web 服务启动失败（127.0.0.1:8765 可能被占用）: {e}")` + `std::process::exit(1)`（天然防双 daemon，spec §10）
+  - 启动日志 `Web 控制台: http://127.0.0.1:8765`（打开 UI 前用户可自取）
+
+- [ ] **Step 1: 写最小失败测试**（`tray.rs` 内，图标生成可测；托盘本体无自动化测试，走手动验收）
+
+```rust
+fn icon_rgba() -> (Vec<u8>, u32, u32) { /* 32x32 蓝色圆点 */ }
+
+#[test]
+fn icon_rgba_is_32x32_valid() {
+    let (rgba, w, h) = icon_rgba();
+    assert_eq!((w, h), (32, 32));
+    assert_eq!(rgba.len(), 32 * 32 * 4);
+}
+```
+
+- [ ] **Step 2: 跑测试确认失败**（`cargo test --lib tray::`，编译错误）
+
+- [ ] **Step 3: 实现**
+
+`tray.rs`：`icon_rgba()`（中心 (16,16) 半径 13 的蓝色 #2B6CB0 实心圆，其余透明）；`spawn(url)` 内 `TrayIconBuilder::new().with_tooltip("daily-report").with_icon(Icon::from_rgba(rgba, 32, 32).unwrap()).with_menu(Box::new(menu)).build().context("tray")?`，`std::thread::spawn` 轮询 `MenuEvent`。
+
+`main.rs`：`Cmd::Run` 加 `#[arg(long)] no_gui: bool`；常驻分支重构为：
+
+```rust
+let hot = Arc::new(HotConfig::new(cfg.clone()));
+let (ai, store) = config_io::build_clients(&cfg);
+let ctx = Arc::new(WebCtx { hot: hot.clone(), config_path: cli.config.clone(),
+    last: Arc::new(Mutex::new(LastRun::default())),
+    ai: RwLock::new(ai.clone()), store: RwLock::new(store.clone()) });
+let last = ctx.last.clone();
+let on_done = Box::new(move |o, e| { *last.lock().unwrap_or_else(|x| x.into_inner()) = LastRun::from_outcome(&o, e.as_deref()); });
+if !no_gui {
+    match actix_web::rt::bind("127.0.0.1:8765") {
+        Ok(addr) => {
+            let srv = actix_web::Server::bind(addr).workers(2)
+                .move_service(actix_web::web::ServiceFactory::wrap(build_app(ctx.clone())));
+            srv.start();
+            tray::spawn("http://127.0.0.1:8765")?;
+            tracing::info!("Web 控制台: http://127.0.0.1:8765");
+        }
+        Err(e) => { tracing::error!("Web 服务启动失败（127.0.0.1:8765 可能被占用）: {e}"); std::process::exit(1); }
+    }
+} else {
+    tracing::info!("--no-gui：跳过 Web 与托盘");
+}
+// scheduler 独立 std 线程（run_resident 内部 thread::sleep 循环，不能在 async 上下文里阻塞）
+std::thread::spawn(move || scheduler::run_resident(hot, ai, store, on_done));
+```
+
+`main()` 保持同步（不引入 tokio main）：`actix_web::rt::bind` + `Server::start` 需要运行中的 runtime——用 `let rt = tokio::runtime::Runtime::new()?; rt.block_on(async { let addr = actix_web::rt::bind("127.0.0.1:8765").await?; let srv = ...bind(addr).await; srv.await; })` 放入**独立 std 线程**，main 线程 `std::thread::park()` 保持存活（托盘"退出"走 `process::exit`；Ctrl+C 直接杀进程亦可接受，spec 只要求干净退出路径在托盘）。若 actix `rt::bind` 不便在独立 runtime 外使用，等价方案：`rt.spawn` + `actix_web::HttpServer::new(...).bind(...).run()` 后 `rt.block_on(futures::future::pending())` 挂起。以"web 线程持 runtime、scheduler 独立线程、main 不退出"为准，`--no-gui` 路径完全不触碰 tokio/actix/tray。
+
+- [ ] **Step 4: 构建 + 全量测试 + 手动验收**
+
+```bash
+cargo build && cargo test
+cargo run -- run            # 验收清单：
+                           #  1) 系统托盘出现图标；
+                           #  2) curl http://127.0.0.1:8765/api/health → {"ok":true}
+                           #  3) curl http://127.0.0.1:8765/ → 200 降级页（Task 10 前）
+                           #  4) 另开终端 cargo run -- run → 报 8765 占用并 exit 1（双 daemon 防护）
+                           #  5) 托盘菜单：打开 UI → 默认浏览器打开控制台；退出 → 进程结束
+cargo run -- run --no-gui   #  6) 无托盘无 web，log_dir/daemon-<今天>.log 正常滚动
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/daemon
+git commit -m "feat: 常驻接线 web(127.0.0.1:8765) + 托盘（打开 UI/退出）+ --no-gui，端口占用即退出"
+```
+
+---
+
+### Task 10: 前端（Vite + Vue 3 + Element Plus）+ 构建集成 + 文档
+
+**Files:**
+- Create: `web/package.json`、`web/vite.config.js`、`web/index.html`、`web/src/main.js`、`web/src/App.vue`、`web/src/router.js`、`web/src/api.js`、`web/src/views/StatusPage.vue`、`web/src/views/ConfigPage.vue`
+- Modify: `README.md`（构建链、GUI 使用、`--no-gui`、故障排查三行）
+- Modify: `config.example.toml`（`jira_password`/`ai_api_key` 注释：GUI 中留空 = 保持不变）
+- .gitignore 不动（`crates/daemon/assets/web/*` 已忽略产物）
+
+**Interfaces:**
+- Consumes: Task 6/7 的 API（`/api/health`、`/api/status`、`GET|PUT /api/config`）
+- Produces: `npm --prefix web run build` 产物 → `crates/daemon/assets/web/`；`web/` 工程入库（`web/node_modules/`、`web/dist/` 不入库——在 `web/.gitignore` 内声明）
+
+**页面要求（spec §5）：**
+- **状态页**（路由 `/`，默认）：el-card 组 = 今天 / 昨天（`status`+`reason` 徽章，skipped 显示原因）、下次写日志（`next_trigger` + `next_target`）、日志目录（`log_dir` + el-button 一键复制 `navigator.clipboard.writeText` + `ElMessage`）、最近一次执行（`last_run` 为 null 显示"暂无"；否则 created/planned/skipped/failed 计数 + failed 明细 + `error` 红色高亮）；页面 `setInterval(3000)` 轮询 `GET /api/health`，失败 → `App.vue` 级 `el-result icon="warning"` 整页"连接失败：daily-report 未运行或端口被占用"，恢复 → 自动重新拉 `/api/status`
+- **配置页**（路由 `/config`）：`el-form` 分区（Jira：base_url/user/password(留空=不变)/tempo_version/worker；时间：check_time/work_start/work_end/total_daily_seconds/worklog_start；AI：base_url/key(留空=不变)/model；仓库映射：`el-table` 动态增删行 `local_path`+`issue_key`+可选 `git_email`；本地路径：log_dir/holidays_dir）。进入时 `GET /api/config` 回填，敏感字段显示 `el-input` + 占位"已配置 ✓（留空保持不变）"且不显示明文；保存 = 前端粗校验（必填非空、时间 `/^([01]\d|2[0-3]):[0-5]\d$/`）→ `PUT /api/config`；200 → `ElMessage.success("已保存并热生效")`；400 → `ElMessage.error(服务端 error)` 且表单不清空
+- 技术：vue-router 4、原生 `fetch`（`api.js` 封装，非 2xx 抛 `{status, error}`）、Element Plus 全量引入（`app.use(ElementPlus)`）、纯 JS 无 TypeScript
+- `vite.config.js`：`plugins:[vue()]`；`build.outDir = "../crates/daemon/assets/web"`、`emptyOutDir: true`，并在 `build.rollupOptions.output` 后加 `writeBundle` 钩子重建 `.placeholder`（保证 rust-embed 目录非空）；`server.proxy = { "/api": "http://127.0.0.1:8765" }`（`npm run dev` 走查直连 daemon）
+
+- [ ] **Step 1: 搭工程骨架**
+
+```bash
+mkdir -p web/src/views
+# package.json（手写锁定版本，不用 create-vite）：
+#   "dependencies": { "vue": "^3.4.0", "vue-router": "^4.3.0", "element-plus": "^2.7.0" },
+#   "devDependencies": { "vite": "^5.2.0", "@vitejs/plugin-vue": "^5.0.0" },
+#   "scripts": { "dev": "vite", "build": "vite build" }
+npm --prefix web install
+```
+
+- [ ] **Step 2: main.js / router.js / App.vue / api.js**
+
+`api.js` 四个函数；`App.vue`：`el-container`（`el-aside` 内 `el-menu` router 模式：状态页/配置页；`el-header` 右侧在线状态圆点）；离线状态用 `provide('online')` + 简单 ref 广播，`el-main` 在离线时整体渲染 `el-result` 替换路由视图。
+
+- [ ] **Step 3: StatusPage.vue / ConfigPage.vue**（按"页面要求"逐条实现）
+
+- [ ] **Step 4: 手动走查（spec §11，不写自动化 UI 测试）**
+
+```bash
+cargo run -- run &              # daemon（含 web）
+npm --prefix web run dev        # http://localhost:5173（proxy /api → 8765）
+# 走查清单：
+#  1) 状态页：今天/昨天徽章正确（可用 CLI 造 state：run --date 昨天 --dry-run 不写 state，
+#     直接改 log_dir/state.json 或等 daemon 自然处理一天验证）
+#  2) 配置页改 check_time=23:45 → 保存 → 成功提示 → 状态页"下次写日志"变 23:4x（热生效）
+#  3) GET /api/config（F12）确认无 jira_password 明文、ai_api_key==""
+#  4) taskkill daemon → ≤3s 页面切离线提示；重启 daemon → 自动恢复数据
+#  5) 配置页留空密码保存 → 文件里旧密码仍在（curl GET /api/config 看 configured 标记）
+```
+
+- [ ] **Step 5: 生产构建 + 全量验证**
+
+```bash
+npm --prefix web run build
+cargo build && cargo test       # exe 重新内嵌前端
+# 手动：cargo run -- run → 浏览器 http://127.0.0.1:8765 → 完整 SPA（非降级页）
+```
+
+- [ ] **Step 6: 文档**
+
+README 增补：「构建与部署」节（`npm --prefix web run build` → `cargo build --release`；微信分发 `daily-report.exe` + `config.example.toml`）；「GUI 控制中心」节（托盘打开 UI、浏览器地址、状态页/配置页说明、`--no-gui`、敏感字段留空=不变）；故障排查表加：`8765 端口被占用 → 另一个 daily-report 已在跑，或手动 taskkill`、`打开是"前端未构建"页 → npm --prefix web run build 后重新 cargo build`、`无托盘图标（headless/无 GUI 会话）→ 用 --no-gui`。`config.example.toml` 两处敏感字段补注释。
+
+- [ ] **Step 7: Commit（两次）**
+
+```bash
+git add web crates/daemon Cargo.lock 2>/dev/null
+git commit -m "feat(web-ui): Vite+Vue3+Element Plus 管理页（状态页/配置页/离线检测/敏感字段留空保留）"
+git add README.md config.example.toml
+git commit -m "docs: README 增补 GUI 构建链/使用说明/故障排查；config 示例补敏感字段注释"
+```
+
+---
+
+## 执行记录
+
+- **Task 1**（commit 见 log）：workspace 化完成。偏离计划一处：cargo 要求 `[profile]` 必须在 workspace 根（包内保留会告警并被忽略），故 `[profile.release] opt-level=2` 移入根 `Cargo.toml`。
+- **Task 2**：`DayRecord` 三个字段按修订计划改 `pub`（`status` handler 要跨模块读）；`mark_skipped` + `pipeline::save_skip` 按计划。
+- **Task 3**：计划里 Step 1 测试原样在 Rust 2021 下 E0382（`h` move 进闭包后又 `h.get()`），改为 `let h2 = h.clone()` 后通过；语义不变。
+- **Task 4**：`prune_old_logs` 按计划。偏离计划一处：本机 tracing-appender 0.2.5 的 builder 实际 API 是 `filename_prefix/filename_suffix/build(dir)`，生成文件名为 `prefix.date.suffix`（如 `daemon-.2026-09-17.log`），与 spec 要求的 `daemon-YYYY-MM-DD.log` 不符；且 `WorkerGuard` 不带生命周期、builder 无 `parent`/`suffix` 方法。改用最小自实现 `DailyLogFile`（`impl io::Write`，按天换文件）套 `tracing_appender::non_blocking` + 自写 `MultiWriter` 双写，命名与清理逻辑完全对齐 spec。

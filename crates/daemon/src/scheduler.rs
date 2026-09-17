@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use chrono::{Local, NaiveTime};
 
-use crate::config::Config;
+use crate::hotconfig::HotConfig;
 use crate::pipeline::{self, WorklogStore};
 use crate::reporter::AIClient;
 
@@ -31,7 +31,8 @@ pub fn next_trigger(t: NaiveTime) -> chrono::DateTime<chrono::Local> {
 }
 
 /// Run the pipeline for `date`, blocking (run on a worker thread).
-fn run_for(cfg: Arc<Config>, date: chrono::NaiveDate, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>, dry_run: bool) {
+fn run_for(hot: Arc<HotConfig>, date: chrono::NaiveDate, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>, dry_run: bool) {
+    let cfg = hot.get();
     match pipeline::run_day(&cfg, date, &*ai, &*store, dry_run) {
         Ok(_) => tracing::info!("==== {} 处理完成 ====", date),
         Err(e) => {
@@ -43,20 +44,23 @@ fn run_for(cfg: Arc<Config>, date: chrono::NaiveDate, ai: Arc<dyn AIClient>, sto
 
 /// Resident loop: catch up on startup if past today's check time, then sleep to
 /// each subsequent trigger.
-pub fn run_resident(cfg: Arc<Config>, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>) {
-    let check = cfg.check_time();
+pub fn run_resident(hot: Arc<HotConfig>, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>) {
+    // 启动补跑用进入函数时的配置快照。
+    let check = hot.get().check_time();
     let now = Local::now();
     let today_at = now.date_naive().and_time(check);
 
     // Startup catch-up: if we've already passed today's check time, run yesterday now.
     if now.naive_local() >= today_at {
         tracing::info!("启动时已过今日 {}，补跑昨日 {}", check, yesterday());
-        run_for(cfg.clone(), yesterday(), ai.clone(), store.clone(), false);
+        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false);
     } else {
         tracing::info!("启动时未到今日 {}，等待到点", check);
     }
 
     loop {
+        // 每轮从共享配置读取最新 check_time（PUT /api/config 热生效）。
+        let check = hot.get().check_time();
         let next = next_trigger(check);
         let delay = (next - Local::now()).to_std().unwrap_or_else(|_| Duration::from_secs(3600));
         // The day the pipeline will fill once the trigger fires (it uses `yesterday()`
@@ -73,6 +77,6 @@ pub fn run_resident(cfg: Arc<Config>, ai: Arc<dyn AIClient>, store: Arc<dyn Work
         );
         std::thread::sleep(delay);
 
-        run_for(cfg.clone(), yesterday(), ai.clone(), store.clone(), false);
+        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false);
     }
 }

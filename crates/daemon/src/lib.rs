@@ -6,6 +6,7 @@
 //! for any repo whose issue has no worklog for the target day yet.
 
 pub mod config;
+pub mod hotconfig;
 pub mod holidays;
 pub mod git_collector;
 pub mod reporter;

@@ -109,7 +109,7 @@ fn main() -> Result<()> {
                 let date = parse_date(&d)?;
                 pipeline::run_day(&cfg, date, &*ai, &*store, dry_run)?;
             } else {
-                scheduler::run_resident(Arc::new(cfg), ai, store);
+                scheduler::run_resident(Arc::new(daily_report::hotconfig::HotConfig::new(cfg)), ai, store);
             }
             Ok(())
         }

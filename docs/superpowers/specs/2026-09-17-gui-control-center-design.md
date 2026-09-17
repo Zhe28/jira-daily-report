@@ -94,7 +94,7 @@ autoGenDailyReport/
 - **状态页**：今天/昨天处理状态卡片、下次写日志时间、最近一次执行摘要（成功写入 / 跳过 / 失败）、日志文件路径（一键复制）。
 - **配置页**：按 config.toml 分区组织表单（Jira / 时间 / AI / 仓库映射 / 本地路径）。仓库映射支持动态增删行（`local_path` + `issue_key` + 可选 `git_email`）。保存时前端粗校验（必填、时间格式）+ 服务端精校验；错误逐字段标红，表单内容不清空。
 - **连接管理**：页面轮询 `GET /api/health`（3s）；daemon 离线时整页显示"连接失败：daily-report 未运行或端口被占用"，恢复后自动刷新数据。
-- **构建集成**：`npm run build` 产物输出到 `crates/daemon/assets/web/`；daemon 用 `rust-embed` 内嵌，`GET /*`（非 `/api/` 前缀）兜底返回 `index.html`。`assets/web/` 目录缺失或为空时，启动报清晰错误："请先运行 npm --prefix web run build"。
+- **构建集成**：`npm run build` 产物输出到 `crates/daemon/assets/web/`；daemon 用 `rust-embed` 内嵌，`GET /*`（非 `/api/` 前缀）兜底返回 `index.html`。`assets/web/` 由 Task 预置 `.placeholder` 保证目录存在；未构建前端时页面显示"前端未构建，请先运行 npm --prefix web run build"（降级提示，不阻止启动）。
 
 ## 6. 托盘
 

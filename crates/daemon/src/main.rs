@@ -80,16 +80,99 @@ fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| anyhow::anyhow!("invalid date '{}': {e}", s))
 }
 
-fn main() -> Result<()> {
+/// 日志初始化：resident=true 时写 `<log_dir>/daemon-<日期>.log`（按天）+ 控制台双写，
+/// 并清理 14 天前的旧文件；false 时与现状一致（仅控制台）。
+fn init_logging(resident: bool, log_dir: &std::path::Path) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("daily_report=info,reqwest=warn"));
+    if !resident {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+        return;
+    }
+    std::fs::create_dir_all(log_dir).ok();
+    daily_report::logfile::prune_old_logs(log_dir, 14);
+    let file = DailyLogFile::new(log_dir.to_path_buf());
+    let (nb, guard) = tracing_appender::non_blocking(file);
+    std::mem::forget(guard); // 进程退出前持续刷盘
     tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "daily_report=info,reqwest=warn".into()),
-        )
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_writer(MultiWriter { file: nb })
         .init();
+}
 
+/// 按天滚动的日志文件：`<dir>/daemon-YYYY-MM-DD.log`，跨天时自动换文件。
+/// （tracing-appender 的 rolling builder 生成 `prefix.date.suffix` 命名，
+/// 与 spec 要求的 `daemon-YYYY-MM-DD.log` 不符，故用最小自实现。）
+struct DailyLogFile {
+    dir: std::path::PathBuf,
+    current_date: Option<chrono::NaiveDate>,
+    file: Option<std::fs::File>,
+}
+
+impl DailyLogFile {
+    fn new(dir: std::path::PathBuf) -> Self {
+        Self { dir, current_date: None, file: None }
+    }
+
+    fn ensure_open(&mut self) -> std::io::Result<()> {
+        let today = chrono::Local::now().date_naive();
+        if self.current_date == Some(today) && self.file.is_some() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let path = self.dir.join(format!("daemon-{}.log", today.format("%Y-%m-%d")));
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        self.file = Some(file);
+        self.current_date = Some(today);
+        Ok(())
+    }
+}
+
+impl std::io::Write for DailyLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.ensure_open()?;
+        self.file.as_mut().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.file.as_mut() {
+            Some(f) => f.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// 文件 + 控制台双写。
+struct MultiWriter {
+    file: tracing_appender::non_blocking::NonBlocking,
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MultiWriter {
+    type Writer = MultiWriteAdapter<'a>;
+    fn make_writer(&'a self) -> Self::Writer {
+        MultiWriteAdapter { file: self.file.clone(), console: std::io::stdout().lock() }
+    }
+}
+struct MultiWriteAdapter<'a> {
+    file: tracing_appender::non_blocking::NonBlocking,
+    console: std::io::StdoutLock<'a>,
+}
+impl<'a> std::io::Write for MultiWriteAdapter<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.file.write(buf)?;
+        let _ = self.console.write_all(buf);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush().and_then(|_| self.console.flush())
+    }
+}
+
+fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = load_config(&cli.config)?;
+    let resident = matches!(cli.cmd, Cmd::Run { date: None, .. });
+    // 常驻模式：日志双写到 log_dir（任何 tracing 调用之前初始化）。
+    init_logging(resident, &cfg.log_dir);
     // Startup check: every repo must have a resolvable committer identity
     // (config git_email → repo-local/global git config user.email).
     cfg.check_git_identity()?;

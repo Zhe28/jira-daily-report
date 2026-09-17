@@ -57,6 +57,22 @@ pub fn build_sections(allocations: &[Allocated], reports: &std::collections::Has
         .collect()
 }
 
+/// 删除 `dir` 下 `daemon-YYYY-MM-DD.log` 形式、日期早于 (今天 - keep_days) 的旧日志；
+/// 前缀不符或日期解析失败的文件一律保留。
+pub fn prune_old_logs(dir: &Path, keep_days: i64) {
+    let today = chrono::Local::now().date_naive();
+    let cutoff = today - chrono::Duration::days(keep_days);
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_prefix("daemon-").and_then(|s| s.strip_suffix(".log")) else { continue };
+        let Ok(d) = chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d") else { continue };
+        if d < cutoff {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +118,25 @@ mod tests {
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(content.contains("内容"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_old_logs_removes_only_old_daemon_files() {
+        let d = std::env::temp_dir().join(format!("prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let old = (today - chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
+        let recent = (today - chrono::Duration::days(2)).format("%Y-%m-%d").to_string();
+        std::fs::write(d.join(format!("daemon-{old}.log")), "x").unwrap();
+        std::fs::write(d.join(format!("daemon-{recent}.log")), "x").unwrap();
+        std::fs::write(d.join("daemon-bogus.log"), "x").unwrap();
+        std::fs::write(d.join("2026-09-09-8小时.log"), "x").unwrap();
+        prune_old_logs(&d, 14);
+        assert!(!d.join(format!("daemon-{old}.log")).exists());
+        assert!(d.join(format!("daemon-{recent}.log")).exists());
+        assert!(d.join("daemon-bogus.log").exists());
+        assert!(d.join("2026-09-09-8小时.log").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

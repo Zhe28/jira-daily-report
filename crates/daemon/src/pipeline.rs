@@ -247,13 +247,27 @@ pub fn save_state(cfg: &Config, date: NaiveDate, outcome: &DayOutcome, dry_run: 
     }
 }
 
+/// Persist the skip reason (only for real, non-dry-run runs).
+pub fn save_skip(cfg: &Config, date: NaiveDate, reason: &str, dry_run: bool) {
+    if dry_run {
+        return;
+    }
+    let mut st = State::load(&cfg.log_dir);
+    st.mark_skipped(date, reason.to_string());
+    if let Err(e) = st.save(&cfg.log_dir) {
+        tracing::warn!("写入 state（skip）失败: {e}");
+    }
+}
+
 /// Top-level: collect + process + state + print summary.
 pub fn run_day(cfg: &Config, date: NaiveDate, ai: &dyn AIClient, store: &dyn WorklogStore, dry_run: bool) -> anyhow::Result<DayOutcome> {
     tracing::info!("==== 处理 {} (dry_run={}) ====", date, dry_run);
     let collected = collect_day(cfg, date)?;
     if let Some(reason) = &collected.skipped {
         tracing::info!("整日跳过: {reason}");
-        return Ok(DayOutcome { skipped_reason: Some(reason.clone()), ..Default::default() });
+        let outcome = DayOutcome { skipped_reason: Some(reason.clone()), ..Default::default() };
+        save_skip(cfg, date, reason, dry_run);
+        return Ok(outcome);
     }
     let outcome = process_day(cfg, date, &collected.repo_days, ai, store, dry_run)?;
     save_state(cfg, date, &outcome, dry_run);

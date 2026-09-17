@@ -13,9 +13,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use daily_report::config::Config;
-use daily_report::reporter::OpenAiClient;
 use daily_report::scheduler;
-use daily_report::tempo::TempoClient;
 use daily_report::pipeline::{self, WorklogStore};
 use daily_report::reporter::AIClient;
 
@@ -64,16 +62,7 @@ fn load_config(path: &PathBuf) -> Result<Config> {
 }
 
 fn build_clients(cfg: &Config) -> (Arc<dyn AIClient>, Arc<dyn WorklogStore>) {
-    let ai: Arc<dyn AIClient> = Arc::new(OpenAiClient::new(&cfg.ai_base_url, &cfg.ai_api_key, &cfg.ai_model));
-    let store: Arc<dyn WorklogStore> = Arc::new(TempoClient::new(
-        &cfg.jira_base_url,
-        &cfg.jira_user,
-        &cfg.jira_password(),
-        cfg.tempo_version,
-        &cfg.worker,
-        &cfg.worklog_search_path,
-    ));
-    (ai, store)
+    daily_report::web::config_io::build_clients(cfg)
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate> {

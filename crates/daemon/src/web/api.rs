@@ -7,6 +7,7 @@ use chrono::Local;
 use serde::Serialize;
 
 use crate::state::State;
+use crate::web::config_io;
 use crate::web::WebCtx;
 
 /// GET /api/health
@@ -73,44 +74,59 @@ pub async fn status(ctx: web::Data<WebCtx>) -> HttpResponse {
     })
 }
 
+/// GET /api/config — 敏感字段不回显（jira_password 省略，ai_api_key 置空，附 configured 标记）。
+pub async fn config_get(ctx: web::Data<WebCtx>) -> HttpResponse {
+    HttpResponse::Ok().json(config_io::read_for_api(&ctx.0.hot.get()))
+}
+
+/// PUT /api/config — 校验 → 沿用敏感字段 → 原子写盘 → 热生效 → 重建客户端。
+///
+/// 客户端重建/替换放在 `web::block` 里：旧的 reqwest::blocking 客户端各持有一个
+/// tokio runtime，只能在阻塞上下文（非 async 任务内）drop。
+pub async fn config_put(ctx: web::Data<WebCtx>, body: web::Json<serde_json::Value>) -> HttpResponse {
+    let val = body.into_inner();
+    let old = ctx.0.hot.get();
+    let path = ctx.0.config_path.clone();
+    let hot = ctx.0.hot.clone();
+    let res = web::block(move || config_io::write(&path, &hot, &old, val)).await;
+    let new = match res {
+        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "blocking pool 异常" })),
+        Ok(Err(e)) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+        Ok(Ok(cfg)) => cfg,
+    };
+    let ai_slot = ctx.0.ai.clone();
+    let store_slot = ctx.0.store.clone();
+    if web::block(move || {
+        let (ai, store) = config_io::build_clients(&new);
+        *ai_slot.write().unwrap_or_else(|e| e.into_inner()) = ai;
+        *store_slot.write().unwrap_or_else(|e| e.into_inner()) = store;
+    })
+    .await
+    .is_err()
+    {
+        return HttpResponse::InternalServerError().json(serde_json::json!({ "error": "blocking pool 异常" }));
+    }
+    tracing::info!("配置已保存并热生效");
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use actix_web::test;
 
     use crate::hotconfig::HotConfig;
     use crate::state::State;
-    use crate::web::{build_app, WebCtx};
+    use crate::web::{build_app, testutil};
 
     fn tmp() -> std::path::PathBuf {
-        static C: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = C.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("web-test-{}-{}", std::process::id(), n));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    fn base_cfg(log_dir: &std::path::Path) -> crate::config::Config {
-        crate::config::Config {
-            jira_base_url: "http://x".into(), jira_user: "u".into(), jira_password: None,
-            tempo_version: 4, worker: "W".into(), check_time: "13:00".into(),
-            work_start: "09:00".into(), work_end: "18:00".into(), worklog_start: None,
-            total_daily_seconds: 28800,
-            log_dir: log_dir.to_path_buf(), holidays_dir: log_dir.join("holidays"),
-            ai_base_url: "http://ai/v1".into(), ai_api_key: "k".into(), ai_model: "m".into(),
-            repos: vec![], git_email: None,
-            worklog_search_path: "/rest/tempo-timesheets/4/worklogs/search".into(),
-        }
+        testutil::tmp()
     }
 
     fn ctx_for(log_dir: &std::path::Path) -> crate::web::WebCtx {
-        crate::web::WebCtx(Arc::new(crate::web::InnerCtx {
-            hot: Arc::new(HotConfig::new(base_cfg(log_dir))),
-            config_path: log_dir.join("config.toml"),
-        }))
+        testutil::ctx_for(log_dir)
     }
 
     #[actix_web::test]
@@ -174,6 +190,72 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&text).unwrap();
         assert_eq!(body["days"][0]["status"], "pending");
         assert_eq!(body["days"][1]["status"], "pending");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn ctx_with_repo(log_dir: &std::path::Path) -> crate::web::WebCtx {
+        crate::web::WebCtx(Arc::new(crate::web::InnerCtx {
+            hot: Arc::new(HotConfig::new(testutil::cfg_with_repo(log_dir))),
+            config_path: log_dir.join("config.toml"),
+            last: Arc::new(Mutex::new(crate::web::LastRun::default())),
+            ai: Arc::new(std::sync::RwLock::new(Arc::new(testutil::MockAi))),
+            store: Arc::new(std::sync::RwLock::new(Arc::new(testutil::MockStore))),
+        }))
+    }
+
+    #[actix_web::test]
+    async fn config_get_masks_and_put_ok_hot_applies() {
+        let d = tmp();
+        let mut c = testutil::cfg_with_repo(&d);
+        c.jira_password = Some("p0".into());
+        let ctx = ctx_with_repo(&d);
+        ctx.0.hot.set(c.clone()); // 预置带密码的配置
+        std::fs::write(&ctx.0.config_path, toml::to_string_pretty(&c).unwrap()).unwrap();
+        let app = test::init_service(build_app(ctx.clone())).await;
+
+        // GET：掩码
+        let req = actix_web::test::TestRequest::get().uri("/api/config").to_request();
+        let text = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
+        let got: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert_eq!(got["jira_password"], serde_json::Value::Null);
+        assert_eq!(got["ai_api_key"], "");
+        assert_eq!(got["jira_password_configured"], true);
+
+        // PUT：改 check_time，省略密码 → 200 且热生效，文件保留旧密码
+        let mut put = got.clone();
+        put["check_time"] = "23:45".into();
+        put.as_object_mut().unwrap().remove("jira_password_configured");
+        put.as_object_mut().unwrap().remove("ai_api_key_configured");
+        let req = actix_web::test::TestRequest::put()
+            .uri("/api/config")
+            .set_json(put)
+            .to_request();
+        let resp = actix_web::test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200, "PUT 应成功");
+        let text = actix_web::test::read_body(resp).await;
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&text).unwrap(), serde_json::json!({"ok":true}));
+        assert_eq!(ctx.0.hot.get().check_time, "23:45");
+        let on_disk_raw = std::fs::read_to_string(&ctx.0.config_path).unwrap();
+        assert!(on_disk_raw.contains("jira_password = \"p0\""), "旧密码应保留");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[actix_web::test]
+    async fn config_put_bad_time_is_400_with_error() {
+        let d = tmp();
+        let ctx = ctx_with_repo(&d);
+        std::fs::write(&ctx.0.config_path, toml::to_string_pretty(&testutil::cfg_with_repo(&d)).unwrap()).unwrap();
+        let app = test::init_service(build_app(ctx.clone())).await;
+
+        let mut body = serde_json::to_value(&ctx.0.hot.get()).unwrap();
+        body["check_time"] = "25:99".into();
+        let req = actix_web::test::TestRequest::put().uri("/api/config").set_json(body).to_request();
+        let resp = actix_web::test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+        let text = actix_web::test::read_body(resp).await;
+        let err: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert!(err["error"].as_str().unwrap().len() > 0, "400 应带 error 信息");
+        assert_ne!(ctx.0.hot.get().check_time, "25:99", "热配置不应被坏值污染");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

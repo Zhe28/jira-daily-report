@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveTime;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Environment variable holding the Jira password (kept out of the config file).
 pub const JIRA_PASS_ENV: &str = "DAILYREPORT_JIRA_PASS";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repo {
     /// Local path of the git working tree (the repo on disk).
     pub local_path: PathBuf,
@@ -17,18 +17,18 @@ pub struct Repo {
     pub issue_key: String,
     /// Committer email used to filter this repo's commits (wins over the
     /// global `git_email` and over `git config user.email`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_email: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub jira_base_url: String,
     pub jira_user: String,
     /// Jira password (optional). When set, it is used only if the
     /// environment variable [`JIRA_PASS_ENV`] is absent or empty.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jira_password: Option<String>,
     #[serde(default = "default_tempo_version")]
     pub tempo_version: u32,
@@ -49,7 +49,7 @@ pub struct Config {
     /// The `started` timestamp stamped on the Tempo worklog (the "clock-in"
     /// time), independent of the git collection window (`work_start`/`work_end`).
     /// Exact `"HH:MM"`; omitted -> falls back to `work_start`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worklog_start: Option<String>,
     /// Directory the merged `.log` files are written to.
     #[serde(default = "default_log_dir")]
@@ -69,7 +69,7 @@ pub struct Config {
     /// per repo by `[[repos]].git_email`. When neither this nor
     /// `git config user.email` (repo-local, then global) is set, the program
     /// refuses to start.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_email: Option<String>,
 
     /// Relative path (under the Jira base URL) of the worklog search endpoint.

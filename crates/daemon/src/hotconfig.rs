@@ -43,7 +43,7 @@ mod tests {
             jira_base_url: "http://x".into(), jira_user: "u".into(), jira_password: None,
             tempo_version: 4, worker: "W".into(), check_time: CheckTime::Single(chrono::NaiveTime::parse_from_str(check_time, "%H:%M").unwrap()),
             work_start: "09:00".into(), work_end: "18:00".into(), worklog_start: None,
-            total_daily_seconds: 28800,
+            total_daily_seconds: 28800, overtime: false,
             log_dir: std::env::temp_dir(), holidays_dir: std::env::temp_dir(),
             ai_base_url: "http://ai/v1".into(), ai_api_key: "k".into(), ai_model: "m".into(),
             repos: vec![], git_email: None,

@@ -140,6 +140,12 @@ pub struct Config {
     /// Exact `"HH:MM"`; omitted -> falls back to `work_start`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worklog_start: Option<String>,
+    /// When true, also collect the user's commits from `work_end` until the
+    /// end of the target day and write a separate overtime worklog (started at
+    /// `work_end`, duration = latest commit − work_end, rounded up to 30 min,
+    /// min 1h). Default false.
+    #[serde(default)]
+    pub overtime: bool,
     /// Directory the merged `.log` files are written to.
     #[serde(default = "default_log_dir")]
     pub log_dir: PathBuf,
@@ -363,9 +369,21 @@ issue_key = "BKAIZSKXM-5"
         assert_eq!(c.work_start, "09:00");
         assert_eq!(c.work_end, "18:00");
         assert_eq!(c.total_daily_seconds, 28800);
+        assert!(!c.overtime, "overtime must default to false");
         assert_eq!(c.repos.len(), 1);
         assert_eq!(c.repos[0].issue_key, "BKAIZSKXM-5");
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn overtime_flag_parses_when_set() {
+        let _env = env_lock();
+        let dir = tempdir();
+        let p = dir.join("config.toml");
+        std::fs::write(&p, format!("overtime = true\n{}", sample())).unwrap();
+        std::env::set_var(JIRA_PASS_ENV, "secret");
+        let c = Config::load(&p).unwrap();
+        assert!(c.overtime);
     }
 
     #[test]
@@ -548,6 +566,7 @@ ai_model = "m"
             work_end: "18:00".into(),
             worklog_start: None,
             total_daily_seconds: 28800,
+            overtime: false,
             log_dir: dir.to_path_buf(),
             holidays_dir: dir.join("holidays"),
             ai_base_url: "http://ai/v1".into(),

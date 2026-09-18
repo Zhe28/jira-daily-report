@@ -102,6 +102,52 @@ fn collector_filters_by_day_and_window() {
 }
 
 #[test]
+fn collector_overtime_collects_until_end_of_day() {
+    let dir = tmp_repo("overtime");
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+    let end_of_day = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+
+    // P: previous day evening -> excluded (different day)
+    commit(&dir, &local_date("2026-09-08", "20:00"), "P previous day evening", "p.txt", "p");
+    // M: just before work_end (17:59) -> excluded from overtime
+    commit(&dir, &local_date("2026-09-09", "17:59"), "M before 18:00", "m.txt", "m");
+    // X: exactly at work_end (18:00:00) -> included
+    commit(&dir, &local_date("2026-09-09", "18:00"), "X at 18:00", "x.txt", "x");
+    // B: 19:00 -> included
+    commit(&dir, &local_date("2026-09-09", "19:00"), "B at 19:00", "b.txt", "b");
+    // N: next morning (2026-09-10 00:30) -> excluded (different day)
+    commit(&dir, &local_date("2026-09-10", "00:30"), "N next morning", "n.txt", "n");
+    // L: late night 23:59 -> included
+    commit(&dir, &local_date("2026-09-09", "23:59"), "L at 23:59", "l.txt", "l");
+
+    let rc = git_collector::collect_for_overtime(&dir, "me@corp.com", date, end_of_day);
+    assert!(rc.error.is_none(), "unexpected error: {:?}", rc.error);
+    let mut subjects: Vec<&str> = rc.commits.iter().map(|c| c.subject.as_str()).collect();
+    subjects.sort_unstable();
+    assert_eq!(
+        subjects,
+        vec!["B at 19:00", "L at 23:59", "X at 18:00"],
+        "expected only the target-day >=18:00 commits, got {subjects:?}"
+    );
+
+    // Kept commits carry patches and counted lines.
+    for c in &rc.commits {
+        assert!(!c.patch.is_empty(), "empty patch for {}", c.subject);
+        assert!(c.added >= 1, "added should be >=1, got {}", c.added);
+    }
+
+    // The normal-window pass sees only the 17:59 commit; the >=18:00 ones
+    // stay out of it (the two windows are disjoint).
+    let (d, start, end) = window();
+    let rc_normal = git_collector::collect_for(&dir, "me@corp.com", d, start, end);
+    let normal_subjects: Vec<&str> = rc_normal.commits.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(normal_subjects, vec!["M before 18:00"],
+        "normal pass should contain only the 17:59 commit, got {normal_subjects:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn non_git_dir_reports_error() {
     let dir = std::env::temp_dir().join(format!("gitcol-notgit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

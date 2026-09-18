@@ -18,20 +18,26 @@ fn merge_toml(original: &str, cfg: &Config) -> anyhow::Result<String> {
     let new = toml_edit::ser::to_document(cfg)
         .map_err(|e| anyhow::anyhow!("序列化新配置失败: {e}"))?;
 
-    // 标量字段 + 简单值：逐键覆盖（保留原键的前导注释）
+    // 标量字段 + 简单值：逐键覆盖（保留原键的前导注释）；磁盘上没有的新键
+    // （如后续版本新增的字段）直接插入，否则保存时热生效、重启后回退默认值。
     let skip = ["repos"]; // repos 单独处理
     for (key, new_item) in new.iter() {
         if skip.contains(&key) {
             continue;
         }
-        if let Some(orig_item) = doc.as_table_mut().get_mut(key) {
-            // 仅当原值存在且类型相同时替换值（保留 decor/注释）
-            if let (Some(orig_val), Some(new_val)) = (orig_item.as_value(), new_item.as_value()) {
-                if std::mem::discriminant(orig_val) == std::mem::discriminant(new_val) {
-                    *orig_item = toml_edit::Item::Value(new_val.clone());
-                } else {
-                    *orig_item = toml_edit::Item::Value(new_val.clone());
+        match doc.as_table_mut().get_mut(key) {
+            Some(orig_item) => {
+                // 仅当原值存在且类型相同时替换值（保留 decor/注释）
+                if let (Some(orig_val), Some(new_val)) = (orig_item.as_value(), new_item.as_value()) {
+                    if std::mem::discriminant(orig_val) == std::mem::discriminant(new_val) {
+                        *orig_item = toml_edit::Item::Value(new_val.clone());
+                    } else {
+                        *orig_item = toml_edit::Item::Value(new_val.clone());
+                    }
                 }
+            }
+            None => {
+                doc.as_table_mut().insert(key, new_item.clone());
             }
         }
     }
@@ -308,6 +314,40 @@ mod tests {
         assert!(saved.contains("# 时间配置"), "应保留时间注释: {saved}");
         assert!(saved.contains("# 仓库列表"), "应保留仓库注释: {saved}");
         assert!(saved.contains("23:45"), "应更新 check_time: {saved}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn write_inserts_new_top_level_key_when_absent() {
+        // 磁盘文件缺少新增字段（overtime）时，PUT 后该键必须落盘，否则重启回退默认值。
+        let d = testutil::tmp();
+        // 初始化 git repo（check_git_identity 需要能解析 user.email）
+        std::process::Command::new("git").args(["init"]).current_dir(&d).output().ok();
+        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(&d).output().ok();
+
+        let c = testutil::cfg_with_repo(&d);
+        let p = d.join("config.toml");
+        // 手写一份不含 overtime 键的 TOML（模拟旧版本生成的文件）
+        let no_overtime: String = toml::to_string_pretty(&c)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with("overtime"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&p, no_overtime).unwrap();
+        let mut c2 = c.clone();
+        c2.jira_password = Some("pass".into());
+        let hot = HotConfig::new(c2.clone());
+
+        let mut in_ = serde_json::to_value(&c2).unwrap();
+        in_["overtime"] = serde_json::json!(true);
+        let new = config_io::write(&p, &hot, &c2, in_).unwrap();
+        assert!(new.overtime);
+        assert!(hot.get().overtime);
+        let saved = std::fs::read_to_string(&p).unwrap();
+        assert!(saved.contains("overtime = true"), "新键应被插入磁盘文件: {saved}");
+        let on_disk = Config::load(&p).unwrap();
+        assert!(on_disk.overtime, "重启（重新 load）后应保持 true");
         let _ = std::fs::remove_dir_all(&d);
     }
 

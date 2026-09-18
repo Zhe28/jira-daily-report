@@ -14,6 +14,8 @@ pub struct LogSection {
     pub repo: String,
     pub seconds: u64,
     pub report: String,
+    /// True for the overtime part of the day (rendered as「加班」).
+    pub overtime: bool,
 }
 
 /// Build the merged log body.
@@ -23,7 +25,13 @@ pub fn render(date: NaiveDate, total_seconds: u64, sections: &[LogSection]) -> S
     out.push_str(&format!("# 总时长 {} 小时（{} 秒）\n", hours_label(total_seconds), total_seconds));
     out.push_str(&format!("# 生成时间 {}\n\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
     for s in sections {
-        out.push_str(&format!("## {}（{}）— {}小时\n", s.issue_key, s.repo, hours_label(s.seconds)));
+        let header = if s.overtime {
+            format!("## {}（{}）加班 — {}小时", s.issue_key, s.repo, hours_label(s.seconds))
+        } else {
+            format!("## {}（{}）— {}小时", s.issue_key, s.repo, hours_label(s.seconds))
+        };
+        out.push_str(&header);
+        out.push('\n');
         out.push_str(&s.report.trim());
         out.push_str("\n\n");
     }
@@ -53,6 +61,7 @@ pub fn build_sections(allocations: &[Allocated], reports: &std::collections::Has
             repo: a.repo.clone(),
             seconds: a.seconds,
             report: reports.get(&a.issue_key).cloned().unwrap_or_default(),
+            overtime: false,
         })
         .collect()
 }
@@ -96,11 +105,30 @@ mod tests {
             repo: "D:\\r".into(),
             seconds: 28800,
             report: "增加功能A\n修复bugB".into(),
+            overtime: false,
         }];
         let body = render(NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(), 28800, &secs);
         assert!(body.contains("# 日报 2026-09-09"));
         assert!(body.contains("## A-1"));
+        assert!(!body.contains("加班"));
         assert!(body.contains("增加功能A"));
+    }
+
+    #[test]
+    fn render_marks_overtime_section() {
+        let secs = vec![
+            LogSection { issue_key: "A-1".into(), repo: "r".into(), seconds: 28800, report: "白天".into(), overtime: false },
+            LogSection { issue_key: "A-1".into(), repo: "r".into(), seconds: 7200, report: "晚上".into(), overtime: true },
+        ];
+        let body = render(NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(), 36000, &secs);
+        assert!(body.contains("## A-1（r）— 8小时"));
+        assert!(body.contains("## A-1（r）加班 — 2小时"));
+    }
+
+    #[test]
+    fn filename_with_overtime_total() {
+        let p = log_path(Path::new("/tmp/x"), NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(), 36000);
+        assert_eq!(p.file_name().unwrap().to_string_lossy(), "2026-09-09-10小时.log");
     }
 
     #[test]
@@ -112,6 +140,7 @@ mod tests {
             repo: "r".into(),
             seconds: 28800,
             report: "内容".into(),
+            overtime: false,
         }];
         let p = write_log(&dir, NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(), 28800, &secs).unwrap();
         assert!(p.exists());

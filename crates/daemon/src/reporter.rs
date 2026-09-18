@@ -75,13 +75,24 @@ impl AIClient for OpenAiClient {
 }
 
 /// System prompt (Chinese) telling the model what to produce.
-pub fn system_prompt() -> &'static str {
-    "你是软件研发日报撰写助手。用户会提供某个仓库某一天（09:00-18:00）的 git 提交 diff（主要依据）和 commit 信息（辅助参考）。\n\
+/// `overtime` selects the post-work-hours variant (the normal variant is
+/// byte-identical to the original prompt).
+pub fn system_prompt(overtime: bool) -> &'static str {
+    if overtime {
+        "你是软件研发日报撰写助手。用户会提供某个仓库某一天下班后的加班时段（18:00 之后至当天结束）的 git 提交 diff（主要依据）和 commit 信息（辅助参考）。\n\
      请根据这些改动，用中文总结成简洁的工作日报条目，要求：\n\
      - 每条一行，用中文，动宾结构（如“增加xxx功能”“优化xxx性能”“修复xxx问题”）；\n\
      - 聚焦实际改动内容，不要编造 diff 中没有的工作；\n\
      - 合并重复或高度相关的条目，控制在 1 到 6 条之间；\n\
      - 只输出条目本身，不要标题、编号、引号或多余解释。"
+    } else {
+        "你是软件研发日报撰写助手。用户会提供某个仓库某一天（09:00-18:00）的 git 提交 diff（主要依据）和 commit 信息（辅助参考）。\n\
+     请根据这些改动，用中文总结成简洁的工作日报条目，要求：\n\
+     - 每条一行，用中文，动宾结构（如“增加xxx功能”“优化xxx性能”“修复xxx问题”）；\n\
+     - 聚焦实际改动内容，不要编造 diff 中没有的工作；\n\
+     - 合并重复或高度相关的条目，控制在 1 到 6 条之间；\n\
+     - 只输出条目本身，不要标题、编号、引号或多余解释。"
+    }
 }
 
 /// Try to read a per-repo prompt file. Returns None if the file doesn't
@@ -136,14 +147,14 @@ pub fn build_user_prompt(rc: &RepoCommits) -> String {
 
 /// Generate the report text for one repo's commits.
 /// If `custom_prompt` is provided, it replaces the default system prompt.
-pub fn report_repo_commits(client: &dyn AIClient, rc: &RepoCommits, custom_prompt: Option<&str>) -> Result<String> {
+pub fn report_repo_commits(client: &dyn AIClient, rc: &RepoCommits, custom_prompt: Option<&str>, overtime: bool) -> Result<String> {
     if !rc.has_commits() {
         return Ok(String::new());
     }
     let user = build_user_prompt(rc);
     let system = match custom_prompt {
         Some(cp) => cp,
-        None => system_prompt(),
+        None => system_prompt(overtime),
     };
     client.generate(system, &user)
 }
@@ -187,7 +198,7 @@ mod tests {
     #[test]
     fn generate_returns_report() {
         let mock = Mock;
-        let r = report_repo_commits(&mock, &rc(), None).unwrap();
+        let r = report_repo_commits(&mock, &rc(), None, false).unwrap();
         assert_eq!(r, "增加测试功能");
     }
 
@@ -195,7 +206,17 @@ mod tests {
     fn empty_repo_yields_empty() {
         let mock = Mock;
         let empty = RepoCommits { repo: "r".into(), commits: vec![], error: None };
-        assert_eq!(report_repo_commits(&mock, &empty, None).unwrap(), "");
+        assert_eq!(report_repo_commits(&mock, &empty, None, false).unwrap(), "");
+    }
+
+    #[test]
+    fn overtime_system_prompt_differs() {
+        // The normal variant is the original prompt (mentions 09:00-18:00).
+        assert!(system_prompt(false).contains("09:00-18:00"));
+        assert!(!system_prompt(false).contains("加班"));
+        // The overtime variant mentions the post-work window, not 09:00-18:00.
+        assert!(system_prompt(true).contains("加班"));
+        assert!(!system_prompt(true).contains("09:00-18:00"));
     }
 
     #[test]
@@ -210,7 +231,7 @@ mod tests {
             }
         }
         let cap = PromptCapture { captured_system: std::sync::Mutex::new(String::new()) };
-        report_repo_commits(&cap, &rc(), Some("my custom prompt")).unwrap();
+        report_repo_commits(&cap, &rc(), Some("my custom prompt"), false).unwrap();
         assert_eq!(*cap.captured_system.lock().unwrap(), "my custom prompt");
     }
 

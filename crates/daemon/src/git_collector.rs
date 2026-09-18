@@ -124,6 +124,19 @@ fn parse_log(lines: &[&str]) -> Vec<(String, String, String, String)> {
 /// currently checked out are still found. The committer email then excludes
 /// commits made by other people on shared/remote branches.
 pub fn collect_for(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime, end: NaiveTime) -> RepoCommits {
+    collect_for_range(repo_path, email, date, start, Some(end))
+}
+
+/// Collect this user's commits on `date` from `start` until the end of that
+/// calendar day (overtime pass; `NaiveTime` cannot express 24:00, hence the
+/// dedicated entry point).
+pub fn collect_for_overtime(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime) -> RepoCommits {
+    collect_for_range(repo_path, email, date, start, None)
+}
+
+/// Core collection. `end = None` keeps every commit on `date` with
+/// `time >= start` (i.e. through the end of the day).
+fn collect_for_range(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime, end: Option<NaiveTime>) -> RepoCommits {
     let label = repo_path.display().to_string();
 
     // Confirm it's a git work tree.
@@ -161,8 +174,12 @@ pub fn collect_for(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveT
             Err(_) => continue,
         };
         let local = dt.with_timezone(&Local);
-        // ...inside the work window.
-        if local.date_naive() != date || !in_window(local.time(), start, end) {
+        // ...inside the window (or, when end is None, from start to end of day).
+        let in_range = match end {
+            Some(e) => in_window(local.time(), start, e),
+            None => local.time() >= start,
+        };
+        if local.date_naive() != date || !in_range {
             continue;
         }
 

@@ -4,6 +4,8 @@
 //!   added lines + removed lines), with the remainder going to the first repo
 //!   so the total always sums to the daily total.
 
+use chrono::NaiveTime;
+
 /// Weight inputs for one repo.
 #[derive(Debug, Clone)]
 pub struct RepoWeight {
@@ -60,6 +62,19 @@ pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
         alloc.push(Allocated { issue_key: r.issue_key.clone(), repo: r.repo.clone(), seconds: secs });
     }
     alloc
+}
+
+/// Overtime duration for a day, in seconds: `last_commit - work_end`,
+/// rounded UP to the nearest 30 minutes, with a floor of 1 hour and no cap.
+/// `last_commit` is the latest overtime commit time on the same day
+/// (always `>= work_end` by construction of the collection window).
+///
+/// Examples (work_end = 18:00): 18:00/18:08/18:29/18:30/18:50 -> 3600;
+/// 19:10 -> 5400; 19:55 -> 7200; 20:35 -> 10800; 23:59 -> 21600.
+pub fn overtime_total_seconds(last_commit: NaiveTime, work_end: NaiveTime) -> u64 {
+    let raw_minutes = ((last_commit - work_end).num_seconds() / 60) as u64;
+    let rounded_up = (raw_minutes + 29) / 30 * 30 * 60;
+    rounded_up.max(3600)
 }
 
 /// Total hours (as a display fraction) for the log filename.
@@ -131,5 +146,38 @@ mod tests {
     #[test]
     fn hours_label_fractional() {
         assert_eq!(hours_label(9000), "2.5");
+    }
+
+    fn t(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn overtime_seconds_rounds_up_half_hour_min_one_hour() {
+        let end = t(18, 0);
+        // Floor at 1h.
+        assert_eq!(overtime_total_seconds(t(18, 0), end), 3600);
+        assert_eq!(overtime_total_seconds(t(18, 8), end), 3600);
+        assert_eq!(overtime_total_seconds(t(18, 29), end), 3600);
+        // Boundary: exactly 30 min stays 1h, just over -> still rounds to 60 min.
+        assert_eq!(overtime_total_seconds(t(18, 30), end), 3600);
+        assert_eq!(overtime_total_seconds(t(18, 31), end), 3600);
+        assert_eq!(overtime_total_seconds(t(18, 50), end), 3600);
+        // Round up to next half hour.
+        assert_eq!(overtime_total_seconds(t(19, 0), end), 3600);
+        assert_eq!(overtime_total_seconds(t(19, 1), end), 5400);
+        assert_eq!(overtime_total_seconds(t(19, 10), end), 5400);
+        assert_eq!(overtime_total_seconds(t(19, 55), end), 7200);
+        assert_eq!(overtime_total_seconds(t(20, 35), end), 10800);
+        // No cap: 5h59m -> 6h.
+        assert_eq!(overtime_total_seconds(t(23, 59), end), 21600);
+    }
+
+    #[test]
+    fn overtime_seconds_works_for_other_work_end() {
+        // work_end 17:00: 17:05 -> 1h floor, 17:40 -> 1h, 18:10 -> 1.5h.
+        assert_eq!(overtime_total_seconds(t(17, 5), t(17, 0)), 3600);
+        assert_eq!(overtime_total_seconds(t(17, 40), t(17, 0)), 3600);
+        assert_eq!(overtime_total_seconds(t(18, 10), t(17, 0)), 5400);
     }
 }

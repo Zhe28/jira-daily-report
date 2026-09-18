@@ -302,9 +302,26 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
 
     for r in &cfg.repos {
         match store.issue_id(&r.issue_key) {
-            Ok(id) => match store.has_worklog_for(id, yday) {
-                Ok(true) => println!("[已写] {} ({})", r.issue_key, r.local_path.display()),
-                Ok(false) => println!("[未写] {} ({})", r.issue_key, r.local_path.display()),
+            Ok(id) => match store.worklog_started_times(id, yday) {
+                Ok(times) => {
+                    // Bucket by work_end: day entries (started < work_end) vs
+                    // evening/overtime entries (started >= work_end). A
+                    // `None` entry (unparseable started) blocks both buckets.
+                    let we = cfg.work_end_time();
+                    let day = times.iter().any(|t| t.is_none() || t.is_some_and(|t| t < we));
+                    let evening = times.iter().any(|t| t.is_none() || t.is_some_and(|t| t >= we));
+                    let mut marks = Vec::new();
+                    if day {
+                        marks.push("[已写-日常]");
+                    }
+                    if evening {
+                        marks.push("[已写-加班]");
+                    }
+                    if marks.is_empty() {
+                        marks.push("[未写]");
+                    }
+                    println!("{} {} ({})", marks.join(" "), r.issue_key, r.local_path.display());
+                }
                 Err(e) => println!("[检查失败] {}: {e}", r.issue_key),
             },
             Err(e) => println!("[issue 解析失败] {}: {e}", r.issue_key),

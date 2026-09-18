@@ -2,8 +2,9 @@
 //!
 //! - `issue_id(issue_key)` — resolve an issue key to its numeric id (needed to
 //!   create a worklog).
-//! - `has_worklog_for(issue_id, date)` — whether a worklog already exists for
-//!   this issue + work date (used to avoid overwriting hand-written logs).
+//! - `worklog_started_times(issue_id, date)` — the `started` times of this
+//!   issue's worklogs on a date (used to avoid overwriting hand-written logs,
+//!   and to allow a separate overtime worklog alongside the daily one).
 //! - `create_worklog(...)` — write a new Tempo worklog.
 //!
 //! The exact search endpoint/method varies across Tempo versions; the search
@@ -13,7 +14,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::Deserialize;
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,11 @@ struct IssueRef {
     id: u64,
 }
 
+
+/// Parse a Tempo `started` value ("YYYY-MM-DD HH:MM:SS.000") into its time of day.
+fn parse_started_time(s: &str) -> Option<NaiveTime> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").ok().map(|dt| dt.time())
+}
 
 impl TempoClient {
     pub fn new(
@@ -127,14 +133,16 @@ impl TempoClient {
             .with_context(|| format!("issue {issue_key} id '{}' is not numeric", j.id))
     }
 
-    /// True if any worklog for this issue has its `started` on `date`.
+    /// The `started` times of this issue's worklogs on `date`.
     ///
     /// Verified against the live server: `POST {search_path}` with body
     /// `{"worker":["<worker>"], "from":"YYYY-MM-DD", "to":"YYYY-MM-DD"}`.
     /// `worker` is a string array; `from`/`to` are date-only (a LocalDate).
     /// The endpoint ignores issue filters, so we filter client-side by
-    /// `issue.id` AND `started` date (both must match).
-    pub fn has_worklog_for(&self, issue_id: u64, date: NaiveDate) -> Result<bool> {
+    /// `issue.id` AND `started` date (both must match). An entry whose
+    /// `started` cannot be parsed yields `None` — callers must treat that
+    /// conservatively (assume the entry blocks the write).
+    pub fn worklog_started_times(&self, issue_id: u64, date: NaiveDate) -> Result<Vec<Option<NaiveTime>>> {
         let day = date.format("%Y-%m-%d").to_string();
         let search = format!("{}/{}", self.base_url.trim_end_matches('/'), self.search_path.trim_start_matches('/'));
         let body = serde_json::json!({
@@ -150,13 +158,14 @@ impl TempoClient {
             bail!("worklog search returned {status}: {}", resp.text().unwrap_or_default());
         }
         let logs: Vec<WorklogJson> = resp.json().context("parsing worklog search")?;
-        Ok(logs.iter().any(|w| {
-            w.issue.as_ref().map(|i| i.id == issue_id).unwrap_or(false)
-                && w.started
-                    .as_deref()
-                    .map(|s| s.starts_with(&day))
-                    .unwrap_or(false)
-        }))
+        Ok(logs
+            .iter()
+            .filter(|w| {
+                w.issue.as_ref().map(|i| i.id == issue_id).unwrap_or(false)
+                    && w.started.as_deref().map(|s| s.starts_with(&day)).unwrap_or(false)
+            })
+            .map(|w| w.started.as_deref().and_then(parse_started_time))
+            .collect())
     }
 
     /// Create a worklog on issue `issue_id` for `seconds`, with `comment` as the
@@ -219,8 +228,8 @@ impl crate::pipeline::WorklogStore for TempoClient {
     fn issue_id(&self, key: &str) -> Result<u64> {
         TempoClient::issue_id(self, key)
     }
-    fn has_worklog_for(&self, id: u64, date: NaiveDate) -> Result<bool> {
-        TempoClient::has_worklog_for(self, id, date)
+    fn worklog_started_times(&self, id: u64, date: NaiveDate) -> Result<Vec<Option<NaiveTime>>> {
+        TempoClient::worklog_started_times(self, id, date)
     }
     fn create_worklog(&self, id: u64, seconds: u64, comment: &str, started: &str, billable: bool) -> Result<u64> {
         TempoClient::create_worklog(self, id, seconds, comment, started, billable)
@@ -247,5 +256,23 @@ mod tests {
         let logs: Vec<WorklogJson> = serde_json::from_str(json).unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].issue.as_ref().unwrap().id, 155324);
+    }
+
+    #[test]
+    fn parse_started_time_formats() {
+        assert_eq!(
+            parse_started_time("2026-09-01 09:00:00.000"),
+            Some(NaiveTime::from_hms_opt(9, 0, 0).unwrap())
+        );
+        assert_eq!(
+            parse_started_time("2026-09-01 18:00:00.000"),
+            Some(NaiveTime::from_hms_opt(18, 0, 0).unwrap())
+        );
+        // The server sends ".000"; a missing fraction also parses (`%.f`).
+        assert_eq!(
+            parse_started_time("2026-09-01 18:00:00"),
+            Some(NaiveTime::from_hms_opt(18, 0, 0).unwrap())
+        );
+        assert_eq!(parse_started_time("garbage"), None);
     }
 }

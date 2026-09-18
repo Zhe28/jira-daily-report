@@ -27,7 +27,7 @@ check_time    = "13:00"
 # 只收集该时间起的 commit
 work_start    = "09:00"
 
-# 到该时间止（之后的加班手动填）
+# 到该时间止（之后的提交算加班，见下方 overtime 开关）
 work_end      = "18:00"
 
 # 单仓库记 8h；多仓库按权重拆这 8h
@@ -37,6 +37,11 @@ total_daily_seconds = 28800
 #   worklog_start = "09:00"   精确时间 → 固定写 09:00:00
 # 省略 → 回退到 work_start，按精确时间处理
 worklog_start = "09:00"
+
+# 是否自动记录加班：开启后额外采集 work_end 至当天结束的提交，
+# 并写一条单独的加班工时（started = work_end，时长 = 最晚提交 − work_end，
+# 向上取整 0.5h、最少 1h、不封顶）。默认关闭（false）。
+overtime = false
 
 # .log 输出目录
 log_dir       = "C:\\Users\\asdf\\Desktop\\jira-report"

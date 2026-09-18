@@ -39,6 +39,12 @@
       <el-form-item label="工时开始时间">
         <el-input v-model="form.worklog_start" placeholder="留空=使用工作开始时间" style="width: 120px" />
       </el-form-item>
+      <el-form-item label="自动记录加班">
+        <el-switch v-model="form.overtime" />
+        <span style="margin-left: 8px; color: #909399; font-size: 12px">
+          额外写一条 started=工作结束 的加班工时（时长按最晚加班提交算，0.5h 取整、最少 1h）
+        </span>
+      </el-form-item>
 
       <el-divider content-position="left">AI</el-divider>
       <el-form-item label="Base URL" required>
@@ -120,7 +126,7 @@ const form = reactive({
   jira_base_url: '', jira_user: '', jira_password: '',
   tempo_version: 4, worker: '',
   check_time: '', work_start: '', work_end: '',
-  total_daily_seconds: 28800, worklog_start: '',
+  total_daily_seconds: 28800, worklog_start: '', overtime: false,
   ai_base_url: '', ai_api_key: '', ai_model: '',
   repos: [],
   log_dir: '', holidays_dir: ''
@@ -140,6 +146,7 @@ onMounted(async () => {
       work_end: cfg.work_end || '',
       total_daily_seconds: cfg.total_daily_seconds ?? 28800,
       worklog_start: cfg.worklog_start || '',
+      overtime: cfg.overtime ?? false,
       ai_base_url: cfg.ai_base_url || '',
       ai_api_key: '',
       ai_model: cfg.ai_model || '',

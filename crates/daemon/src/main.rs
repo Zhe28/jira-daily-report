@@ -181,7 +181,15 @@ fn main() -> Result<()> {
                 let date = parse_date(&d)?;
                 pipeline::run_day(&cfg, date, &*ai, &*store, dry_run)?;
             } else {
-                scheduler::run_resident(Arc::new(daily_report::hotconfig::HotConfig::new(cfg)), ai, store);
+                let hot = Arc::new(daily_report::hotconfig::HotConfig::new(cfg));
+                let last = std::sync::Arc::new(std::sync::Mutex::new(daily_report::web::LastRun::default()));
+                let last2 = last.clone();
+                let on_done: Box<dyn Fn(daily_report::pipeline::DayOutcome, Option<String>) + Send + Sync> =
+                    Box::new(move |o, e| {
+                        let mut g = last2.lock().unwrap_or_else(|x| x.into_inner());
+                        *g = daily_report::web::LastRun::from_outcome(&o, e.as_deref());
+                    });
+                scheduler::run_resident(hot, ai, store, on_done);
             }
             Ok(())
         }

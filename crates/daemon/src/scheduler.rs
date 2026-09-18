@@ -31,20 +31,36 @@ pub fn next_trigger(t: NaiveTime) -> chrono::DateTime<chrono::Local> {
 }
 
 /// Run the pipeline for `date`, blocking (run on a worker thread).
-fn run_for(hot: Arc<HotConfig>, date: chrono::NaiveDate, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>, dry_run: bool) {
+fn run_for(
+    hot: Arc<HotConfig>,
+    date: chrono::NaiveDate,
+    ai: Arc<dyn AIClient>,
+    store: Arc<dyn WorklogStore>,
+    dry_run: bool,
+    on_done: &dyn Fn(pipeline::DayOutcome, Option<String>),
+) {
     let cfg = hot.get();
     match pipeline::run_day(&cfg, date, &*ai, &*store, dry_run) {
-        Ok(_) => tracing::info!("==== {} 处理完成 ====", date),
+        Ok(outcome) => {
+            tracing::info!("==== {} 处理完成 ====", date);
+            on_done(outcome, None);
+        }
         Err(e) => {
             tracing::error!("==== {} 处理出错: {e} ====", date);
             crate::notify::notify("日报处理出错", &format!("{date}: {e}"));
+            on_done(pipeline::DayOutcome::default(), Some(e.to_string()));
         }
     }
 }
 
 /// Resident loop: catch up on startup if past today's check time, then sleep to
 /// each subsequent trigger.
-pub fn run_resident(hot: Arc<HotConfig>, ai: Arc<dyn AIClient>, store: Arc<dyn WorklogStore>) {
+pub fn run_resident(
+    hot: Arc<HotConfig>,
+    ai: Arc<dyn AIClient>,
+    store: Arc<dyn WorklogStore>,
+    on_done: Box<dyn Fn(pipeline::DayOutcome, Option<String>) + Send + Sync>,
+) {
     // 启动补跑用进入函数时的配置快照。
     let check = hot.get().check_time();
     let now = Local::now();
@@ -53,7 +69,7 @@ pub fn run_resident(hot: Arc<HotConfig>, ai: Arc<dyn AIClient>, store: Arc<dyn W
     // Startup catch-up: if we've already passed today's check time, run yesterday now.
     if now.naive_local() >= today_at {
         tracing::info!("启动时已过今日 {}，补跑昨日 {}", check, yesterday());
-        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false);
+        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false, &*on_done);
     } else {
         tracing::info!("启动时未到今日 {}，等待到点", check);
     }
@@ -77,6 +93,6 @@ pub fn run_resident(hot: Arc<HotConfig>, ai: Arc<dyn AIClient>, store: Arc<dyn W
         );
         std::thread::sleep(delay);
 
-        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false);
+        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false, &*on_done);
     }
 }

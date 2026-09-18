@@ -10,13 +10,40 @@ pub mod api;
 pub mod config_io;
 
 /// 最近一次 pipeline 执行结果（scheduler 完成回调写入，status API 读取）。
-/// Task 7 补全 outcome 明细字段。
 #[derive(Default, Clone, serde::Serialize)]
 pub struct LastRun {
     /// "YYYY-MM-DD"；空串 = 尚无记录。
     pub date: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+    /// (issue_key, seconds, worklog_id)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created: Vec<(String, u64, u64)>,
+    /// dry-run: (issue_key, seconds)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned: Vec<(String, u64)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_existing: Vec<String>,
+    /// (issue_key, error)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<(String, String)>,
+}
+
+impl LastRun {
+    /// 从 pipeline 执行结果构造。
+    pub fn from_outcome(o: &crate::pipeline::DayOutcome, err: Option<&str>) -> Self {
+        Self {
+            date: crate::scheduler::yesterday().format("%Y-%m-%d").to_string(),
+            error: err.map(|s| s.to_string()),
+            skipped_reason: o.skipped_reason.clone(),
+            created: o.created.clone(),
+            planned: o.planned.clone(),
+            skipped_existing: o.skipped_existing.clone(),
+            failed: o.failed.clone(),
+        }
+    }
 }
 
 /// actix 全局共享状态（`web::Data<WebCtx>`；handler 参数直接收 `web::Data<WebCtx>`）。

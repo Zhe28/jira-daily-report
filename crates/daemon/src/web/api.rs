@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::state::State;
 use crate::web::config_io;
-use crate::web::WebCtx;
+use crate::web::{LastRun, WebCtx};
 
 /// GET /api/health
 pub async fn health() -> HttpResponse {
@@ -36,6 +36,8 @@ pub struct StatusView {
     /// 下次触发将处理的日期 "YYYY-MM-DD"
     pub next_target: String,
     pub log_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<LastRun>,
 }
 
 fn day_status(log_dir: &std::path::Path, date: chrono::NaiveDate) -> DayStatus {
@@ -64,6 +66,8 @@ pub async fn status(ctx: web::Data<WebCtx>) -> HttpResponse {
     let now = Local::now().date_naive();
     let yday = now - chrono::Duration::days(1);
     let next = crate::scheduler::next_trigger(cfg.check_time());
+    let last = ctx.0.last.lock().unwrap_or_else(|e| e.into_inner());
+    let last_run = if last.date.is_empty() { None } else { Some(last.clone()) };
     HttpResponse::Ok().json(StatusView {
         today: now.format("%Y-%m-%d").to_string(),
         yesterday: yday.format("%Y-%m-%d").to_string(),
@@ -71,6 +75,7 @@ pub async fn status(ctx: web::Data<WebCtx>) -> HttpResponse {
         next_trigger: next.format("%Y-%m-%d %H:%M:%S").to_string(),
         next_target: (next.date_naive() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string(),
         log_dir: cfg.log_dir.display().to_string(),
+        last_run,
     })
 }
 
@@ -256,6 +261,39 @@ mod tests {
         let err: serde_json::Value = serde_json::from_slice(&text).unwrap();
         assert!(err["error"].as_str().unwrap().len() > 0, "400 应带 error 信息");
         assert_ne!(ctx.0.hot.get().check_time, "25:99", "热配置不应被坏值污染");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[actix_web::test]
+    async fn status_includes_last_run_after_callback() {
+        let d = tmp();
+        let ctx = ctx_with_repo(&d);
+        let app = test::init_service(build_app(ctx.clone())).await;
+
+        // 模拟 scheduler 回调写入 LastRun
+        let mut o = crate::pipeline::DayOutcome::default();
+        o.created.push(("A-1".into(), 28800u64, 7u64));
+        *ctx.0.last.lock().unwrap() = crate::web::LastRun::from_outcome(&o, None);
+
+        let req = actix_web::test::TestRequest::get().uri("/api/status").to_request();
+        let text = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
+        let body: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert_eq!(body["last_run"]["created"][0][0], "A-1");
+        assert_eq!(body["last_run"]["created"][0][1], 28800);
+        assert!(body["last_run"]["error"].is_null());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[actix_web::test]
+    async fn status_last_run_null_when_empty() {
+        let d = tmp();
+        let ctx = ctx_with_repo(&d);
+        let app = test::init_service(build_app(ctx.clone())).await;
+
+        let req = actix_web::test::TestRequest::get().uri("/api/status").to_request();
+        let text = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
+        let body: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert!(body["last_run"].is_null(), "无执行记录时 last_run 应为 null");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

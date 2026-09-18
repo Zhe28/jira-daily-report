@@ -8,6 +8,7 @@ use crate::hotconfig::HotConfig;
 
 pub mod api;
 pub mod config_io;
+pub mod ui;
 
 /// 最近一次 pipeline 执行结果（scheduler 完成回调写入，status API 读取）。
 #[derive(Default, Clone, serde::Serialize)]
@@ -79,6 +80,8 @@ pub fn build_app(ctx: WebCtx) -> App<
         .route("/api/status", web::get().to(api::status))
         .route("/api/config", web::get().to(api::config_get))
         .route("/api/config", web::put().to(api::config_put))
+        // catch-all SPA 路由必须挂在 /api/* 之后（actix 按声明顺序匹配）
+        .route("/{tail:.*}", web::get().to(ui::spa))
 }
 
 #[cfg(test)]

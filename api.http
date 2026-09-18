@@ -31,6 +31,25 @@
 # 德华安顾开发：DHWJBGSCXT-5 -> issue id 157007
 # @issueId = 157007
 
+### 0.  登录验证
+POST http://114.215.252.122:8080/login.jsp HTTP/1.1
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+Accept-Encoding: gzip, deflate
+Accept-Language: zh,en;q=0.9,zh-CN;q=0.8
+Cache-Control: no-cache
+Content-Length: 116
+Content-Type: application/x-www-form-urlencoded
+Cookie: JIRASESSIONID=13AFD41FA3C8ACB1E926177450A9E5E5; atlassian.xsrf.token=BS0B-68XT-LA1N-QO1H_311edec518f4162568833eb2fd5df71f3458b7a7_lout
+DNT: 1
+Host: 114.215.252.122:8080
+Origin: http://114.215.252.122:8080
+Pragma: no-cache
+Proxy-Connection: keep-alive
+Referer: http://114.215.252.122:8080/login.jsp
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0
+
+
 
 ### 1. 连通性 + 登录验证
 ### 等价于代码里 TempoClient::reachable()。200 且返回你的用户 JSON 即通

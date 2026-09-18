@@ -10,7 +10,7 @@ name = "daily-report"
 path = "src/main.rs"
 
 [dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "cookies"] }
 toml = "0.8"
 toml_edit = "0.20"
 serde = { version = "1", features = ["derive"] }
@@ -30,3 +30,5 @@ thiserror = "1"
 base64 = "0.22"
 dirs = "5"
 wait-timeout = "0.2"
+urlencoding = "2"
+rand = "0.10"

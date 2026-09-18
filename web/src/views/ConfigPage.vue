@@ -25,7 +25,7 @@
 
       <el-divider content-position="left">时间</el-divider>
       <el-form-item label="检查时间" required>
-        <el-input v-model="form.check_time" placeholder="13:00" style="width: 120px" />
+        <el-input v-model="form.check_time" placeholder="13:00 或 09:00-10:00" style="width: 160px" />
       </el-form-item>
       <el-form-item label="工作开始" required>
         <el-input v-model="form.work_start" placeholder="09:00" style="width: 120px" />
@@ -73,13 +73,18 @@
             <el-input v-model="row.git_email" size="small" placeholder="留空=用 git config" />
           </template>
         </el-table-column>
+        <el-table-column label="提示词文件 (可选)" width="200">
+          <template #default="{ row }">
+            <el-input v-model="row.prompt_file" size="small" placeholder="留空=默认提示词" />
+          </template>
+        </el-table-column>
         <el-table-column width="60">
           <template #default="{ $index }">
             <el-button type="danger" size="small" text @click="form.repos.splice($index, 1)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
-      <el-button size="small" @click="form.repos.push({ local_path: '', issue_key: '', git_email: '' })">
+      <el-button size="small" @click="form.repos.push({ local_path: '', issue_key: '', git_email: '', prompt_file: '' })">
         添加仓库
       </el-button>
 
@@ -103,7 +108,8 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getConfig, putConfig } from '../api.js'
 
-const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/
+const TIME_RANGE_RE = /^([01]?\d|2[0-3]):[0-5]\d-([01]?\d|2[0-3]):[0-5]\d$/
 
 const loading = ref(true)
 const saving = ref(false)
@@ -140,7 +146,8 @@ onMounted(async () => {
       repos: (cfg.repos || []).map(r => ({
         local_path: r.local_path || '',
         issue_key: r.issue_key || '',
-        git_email: r.git_email || ''
+        git_email: r.git_email || '',
+        prompt_file: r.prompt_file || ''
       })),
       log_dir: cfg.log_dir || '',
       holidays_dir: cfg.holidays_dir || ''
@@ -159,7 +166,7 @@ onMounted(async () => {
 function validate() {
   if (!form.jira_base_url.trim()) return 'Jira Base URL 不能为空'
   if (!form.jira_user.trim()) return 'Jira 用户名不能为空'
-  if (!TIME_RE.test(form.check_time)) return '检查时间格式错误（HH:MM）'
+  if (!TIME_RE.test(form.check_time) && !TIME_RANGE_RE.test(form.check_time)) return '检查时间格式错误（HH:MM 或 HH:MM-HH:MM）'
   if (!TIME_RE.test(form.work_start)) return '工作开始时间格式错误'
   if (!TIME_RE.test(form.work_end)) return '工作结束时间格式错误'
   if (form.worklog_start && !TIME_RE.test(form.worklog_start)) return '工时开始时间格式错误'

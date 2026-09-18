@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(resp.status(), 200, "PUT 应成功");
         let text = actix_web::test::read_body(resp).await;
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&text).unwrap(), serde_json::json!({"ok":true}));
-        assert_eq!(ctx.0.hot.get().check_time, "23:45");
+        assert_eq!(ctx.0.hot.get().check_time, crate::config::CheckTime::Single(chrono::NaiveTime::from_hms_opt(23, 45, 0).unwrap()));
         let on_disk_raw = std::fs::read_to_string(&ctx.0.config_path).unwrap();
         assert!(on_disk_raw.contains("jira_password = \"p0\""), "旧密码应保留");
         let _ = std::fs::remove_dir_all(&d);
@@ -260,7 +260,7 @@ mod tests {
         let text = actix_web::test::read_body(resp).await;
         let err: serde_json::Value = serde_json::from_slice(&text).unwrap();
         assert!(err["error"].as_str().unwrap().len() > 0, "400 应带 error 信息");
-        assert_ne!(ctx.0.hot.get().check_time, "25:99", "热配置不应被坏值污染");
+        assert_eq!(ctx.0.hot.get().check_time, crate::config::CheckTime::default(), "热配置不应被坏值污染");
         let _ = std::fs::remove_dir_all(&d);
     }
 

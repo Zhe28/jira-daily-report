@@ -126,7 +126,7 @@ pub mod testutil {
     pub fn base_cfg(log_dir: &std::path::Path) -> crate::config::Config {
         crate::config::Config {
             jira_base_url: "http://x".into(), jira_user: "u".into(), jira_password: None,
-            tempo_version: 4, worker: "W".into(), check_time: "13:00".into(),
+            tempo_version: 4, worker: "W".into(), check_time: crate::config::CheckTime::default(),
             work_start: "09:00".into(), work_end: "18:00".into(), worklog_start: None,
             total_daily_seconds: 28800,
             log_dir: log_dir.to_path_buf(), holidays_dir: log_dir.join("holidays"),
@@ -143,6 +143,7 @@ pub mod testutil {
             local_path: log_dir.to_path_buf(),
             issue_key: "A-1".into(),
             git_email: Some("t@t.com".into()),
+            prompt_file: None,
         }];
         c
     }

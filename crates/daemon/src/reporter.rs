@@ -84,6 +84,26 @@ pub fn system_prompt() -> &'static str {
      - 只输出条目本身，不要标题、编号、引号或多余解释。"
 }
 
+/// Try to read a per-repo prompt file. Returns None if the file doesn't
+/// exist or is empty. The path is relative to the repo root.
+pub fn read_repo_prompt(repo_path: &std::path::Path, prompt_file: &str) -> Option<String> {
+    let full_path = repo_path.join(prompt_file);
+    match std::fs::read_to_string(&full_path) {
+        Ok(content) if !content.trim().is_empty() => {
+            tracing::info!("using custom prompt from {}", full_path.display());
+            Some(content)
+        }
+        Ok(_) => {
+            tracing::info!("prompt file {} is empty, using default", full_path.display());
+            None
+        }
+        Err(e) => {
+            tracing::debug!("prompt file {} not found ({}), using default", full_path.display(), e);
+            None
+        }
+    }
+}
+
 /// Truncate a single patch to a char budget (keeps the head, appends a marker).
 pub fn truncate_patch(patch: &str, budget: usize) -> String {
     if patch.chars().count() <= budget {
@@ -115,12 +135,17 @@ pub fn build_user_prompt(rc: &RepoCommits) -> String {
 }
 
 /// Generate the report text for one repo's commits.
-pub fn report_repo_commits(client: &dyn AIClient, rc: &RepoCommits) -> Result<String> {
+/// If `custom_prompt` is provided, it replaces the default system prompt.
+pub fn report_repo_commits(client: &dyn AIClient, rc: &RepoCommits, custom_prompt: Option<&str>) -> Result<String> {
     if !rc.has_commits() {
         return Ok(String::new());
     }
     let user = build_user_prompt(rc);
-    client.generate(system_prompt(), &user)
+    let system = match custom_prompt {
+        Some(cp) => cp,
+        None => system_prompt(),
+    };
+    client.generate(system, &user)
 }
 
 #[cfg(test)]
@@ -162,7 +187,7 @@ mod tests {
     #[test]
     fn generate_returns_report() {
         let mock = Mock;
-        let r = report_repo_commits(&mock, &rc()).unwrap();
+        let r = report_repo_commits(&mock, &rc(), None).unwrap();
         assert_eq!(r, "增加测试功能");
     }
 
@@ -170,7 +195,23 @@ mod tests {
     fn empty_repo_yields_empty() {
         let mock = Mock;
         let empty = RepoCommits { repo: "r".into(), commits: vec![], error: None };
-        assert_eq!(report_repo_commits(&mock, &empty).unwrap(), "");
+        assert_eq!(report_repo_commits(&mock, &empty, None).unwrap(), "");
+    }
+
+    #[test]
+    fn custom_prompt_is_passed_through() {
+        struct PromptCapture {
+            captured_system: std::sync::Mutex<String>,
+        }
+        impl AIClient for PromptCapture {
+            fn generate(&self, system: &str, _user: &str) -> Result<String> {
+                *self.captured_system.lock().unwrap() = system.to_string();
+                Ok("ok".into())
+            }
+        }
+        let cap = PromptCapture { captured_system: std::sync::Mutex::new(String::new()) };
+        report_repo_commits(&cap, &rc(), Some("my custom prompt")).unwrap();
+        assert_eq!(*cap.captured_system.lock().unwrap(), "my custom prompt");
     }
 
     #[test]

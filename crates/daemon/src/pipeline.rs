@@ -27,6 +27,7 @@ pub struct RepoDay {
     pub repo: String,
     pub issue_key: String,
     pub commits: RepoCommits,
+    pub prompt_file: Option<String>,
 }
 
 /// Result of the collect phase.
@@ -83,6 +84,7 @@ pub fn collect_day(cfg: &Config, date: NaiveDate) -> anyhow::Result<CollectResul
                 repo: r.local_path.display().to_string(),
                 issue_key: r.issue_key.clone(),
                 commits: rc,
+                prompt_file: r.prompt_file.clone(),
             });
         }
     }
@@ -132,7 +134,12 @@ pub fn process_day(
             added: rd.commits.total_added(),
             removed: rd.commits.total_removed(),
         });
-        match reporter::report_repo_commits(ai, &rd.commits) {
+        // Read per-repo prompt file (if configured and the file exists).
+        let repo_path = std::path::Path::new(&rd.repo);
+        let custom_prompt = rd.prompt_file.as_deref()
+            .and_then(|pf| reporter::read_repo_prompt(repo_path, pf));
+
+        match reporter::report_repo_commits(ai, &rd.commits, custom_prompt.as_deref()) {
             Ok(text) => {
                 reports.insert(rd.issue_key.clone(), Ok(text));
             }
@@ -362,7 +369,7 @@ mod tests {
             jira_password: None,
             tempo_version: 4,
             worker: "W".into(),
-            check_time: "13:00".into(),
+            check_time: crate::config::CheckTime::default(),
             work_start: "09:00".into(),
             work_end: "18:00".into(),
             worklog_start: None,
@@ -393,7 +400,7 @@ mod tests {
     fn single_repo_writes_full_8h() {
         let dir = tmp();
         let c = cfg(&dir);
-        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s") }];
+        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s"), prompt_file: None }];
         let ai = MockAi { text: "增加功能".into(), fail: false };
         let store = MockStore {
             ids: [("A-1".to_string(), 100)].into_iter().collect(),
@@ -414,7 +421,7 @@ mod tests {
     fn existing_worklog_is_skipped() {
         let dir = tmp();
         let c = cfg(&dir);
-        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s") }];
+        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s"), prompt_file: None }];
         let ai = MockAi { text: "x".into(), fail: false };
         let store = MockStore {
             ids: [("A-1".to_string(), 100)].into_iter().collect(),
@@ -433,7 +440,7 @@ mod tests {
     fn ai_failure_writes_nothing() {
         let dir = tmp();
         let c = cfg(&dir);
-        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s") }];
+        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s"), prompt_file: None }];
         let ai = MockAi { text: "".into(), fail: true };
         let store = MockStore {
             ids: [("A-1".to_string(), 100)].into_iter().collect(),
@@ -452,7 +459,7 @@ mod tests {
     fn dry_run_plans_but_writes_nothing() {
         let dir = tmp();
         let c = cfg(&dir);
-        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s") }];
+        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s"), prompt_file: None }];
         let ai = MockAi { text: "x".into(), fail: false };
         let store = MockStore {
             ids: [("A-1".to_string(), 100)].into_iter().collect(),
@@ -496,7 +503,7 @@ mod tests {
         let dir = tmp();
         let mut c = cfg(&dir);
         c.worklog_start = Some("14:00".into());
-        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s") }];
+        let rd = vec![RepoDay { repo: "D:\\r".into(), issue_key: "A-1".into(), commits: rc_one("s"), prompt_file: None }];
         let ai = MockAi { text: "x".into(), fail: false };
         let store = MockStore {
             ids: [("A-1".to_string(), 100)].into_iter().collect(),

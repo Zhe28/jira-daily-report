@@ -1,4 +1,4 @@
-//! Jira + Tempo REST client (HTTP Basic Auth).
+//! Jira + Tempo REST client (cookie-based session auth via login.jsp).
 //!
 //! - `issue_id(issue_key)` — resolve an issue key to its numeric id (needed to
 //!   create a worklog).
@@ -47,6 +47,7 @@ struct IssueRef {
     id: u64,
 }
 
+
 impl TempoClient {
     pub fn new(
         base_url: &str,
@@ -57,6 +58,7 @@ impl TempoClient {
         search_path: &str,
     ) -> Self {
         let http = reqwest::blocking::Client::builder()
+            .cookie_store(true)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .build()
@@ -68,20 +70,54 @@ impl TempoClient {
             pass: pass.into(),
             version,
             worker: worker.into(),
-            // Normalize: strip leading/trailing slashes so base + "/" + path
-            // never produces a double slash.
             search_path: search_path.trim_start_matches('/').trim_end_matches('/').to_string(),
         }
+    }
+
+    /// Execute a request; if the server returns 401, re-login and retry once.
+    fn send_with_relogin(
+        &self,
+        build: impl Fn() -> reqwest::blocking::RequestBuilder,
+    ) -> Result<reqwest::blocking::Response> {
+        let resp = build().send().context("Jira request failed")?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            tracing::info!("Jira 401 — 正在重新登录…");
+            self.login()?;
+            return build().send().context("Jira request failed after re-login");
+        }
+        Ok(resp)
+    }
+
+    /// Authenticate via the Jira login form (cookie-based session).
+    /// Must be called before any API request.
+    pub fn login(&self) -> Result<()> {
+        let url = format!("{}/login.jsp", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "os_username={}&os_password={}&os_cookie=true&os_destination=&user_role=&atl_token=&login=%E7%99%BB%E5%BD%95",
+                urlencoding::encode(&self.user),
+                urlencoding::encode(&self.pass),
+            ))
+            .send()
+            .context("Jira login request failed")?;
+        let status = resp.status();
+        if status.is_server_error() {
+            bail!("Jira login returned {status}");
+        }
+        // login.jsp returns 200 on success (or 302 redirect — both ok).
+        // The cookie jar now holds JSESSIONID + XSRF token for subsequent requests.
+        Ok(())
     }
 
     /// GET /rest/api/2/issue/{key} -> numeric id.
     pub fn issue_id(&self, issue_key: &str) -> Result<u64> {
         let url = format!("{}/rest/api/2/issue/{}", self.base_url, issue_key);
-        let resp = self.http.get(&url).basic_auth(&self.user, Some(&self.pass)).send().with_context(|| format!("lookup issue {issue_key}"))?;
+        let resp = self.send_with_relogin(|| self.http.get(&url))
+            .with_context(|| format!("lookup issue {issue_key}"))?;
         let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            bail!("Jira returned 401 — check username/password");
-        }
         if !status.is_success() {
             bail!("Jira issue lookup for {issue_key} returned {status}");
         }
@@ -106,18 +142,10 @@ impl TempoClient {
             "from": day,
             "to": day
         });
-        let resp = self
-            .http
-            .post(&search)
-            .basic_auth(&self.user, Some(&self.pass))
-            .json(&body)
-            .send()
+        let resp = self.send_with_relogin(|| self.http.post(&search).json(&body))
             .with_context(|| format!("searching worklogs (POST {})", self.search_path))?;
 
         let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            bail!("Jira returned 401 during worklog search — check credentials");
-        }
         if !status.is_success() {
             bail!("worklog search returned {status}: {}", resp.text().unwrap_or_default());
         }
@@ -154,7 +182,8 @@ impl TempoClient {
             "started": started,
             "worker": self.worker
         });
-        let resp = self.http.post(&url).basic_auth(&self.user, Some(&self.pass)).json(&body).send().with_context(|| "creating worklog")?;
+        let resp = self.send_with_relogin(|| self.http.post(&url).json(&body))
+            .context("creating worklog")?;
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
         if !status.is_success() {
@@ -170,19 +199,12 @@ impl TempoClient {
     }
 
     /// Quick reachability probe (used by the readiness check), <=5s budget.
-    /// Fails on connection error, 401 (bad creds), or any other non-2xx.
+    /// Fails on connection error or any other non-2xx.
     pub fn reachable(&self) -> Result<()> {
         let url = format!("{}/rest/api/2/myself", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .basic_auth(&self.user, Some(&self.pass))
-            .send()
+        let resp = self.send_with_relogin(|| self.http.get(&url))
             .context("connecting to Jira")?;
         let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            bail!("Jira 401 — bad credentials");
-        }
         if !status.is_success() {
             bail!("Jira returned {status} (unreachable or bad response)");
         }

@@ -17,6 +17,8 @@ use daily_report::scheduler;
 use daily_report::pipeline::{self, WorklogStore};
 use daily_report::reporter::AIClient;
 
+const EXAMPLE_CONFIG: &str = include_str!("../../../config.example.toml");
+
 #[derive(Parser, Debug)]
 #[command(
     name = "daily-report",
@@ -57,6 +59,12 @@ enum Cmd {
         /// 只生成并保存 .log，不写入 Tempo
         #[arg(long)]
         dry_run: bool,
+    },
+    /// 生成 config.toml 模板（默认写入当前目录）
+    GenerateConfig {
+        /// 指定输出路径（默认 ./config.toml）
+        #[arg(long, short)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -161,6 +169,12 @@ impl<'a> std::io::Write for MultiWriteAdapter<'a> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // generate-config does not need an existing config file.
+    if let Cmd::GenerateConfig { output } = &cli.cmd {
+        return cmd_generate_config(output.as_deref());
+    }
+
     let cfg = load_config(&cli.config)?;
     let resident = matches!(cli.cmd, Cmd::Run { date: None, .. });
     // 常驻模式：日志双写到 log_dir（任何 tracing 调用之前初始化）。
@@ -268,6 +282,7 @@ fn main() -> Result<()> {
             pipeline::run_day(&cfg, date, &*ai, &*store, dry_run)?;
             Ok(())
         }
+        Cmd::GenerateConfig { .. } => unreachable!("handled above"),
     }
 }
 
@@ -296,5 +311,34 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
         }
     }
     println!();
+    Ok(())
+}
+
+/// Generate a config.toml template. Default: write to `./config.toml` in the
+/// current directory. With `-o`, write to the specified path.
+fn cmd_generate_config(output: Option<&std::path::Path>) -> Result<()> {
+    let target = match output {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir()?.join("config.toml"),
+    };
+    if target.exists() {
+        print!("{} 已存在，是否覆盖？(y/N) ", target.display());
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("已取消。");
+            return Ok(());
+        }
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&target, EXAMPLE_CONFIG)
+        .map_err(|e| anyhow::anyhow!("写入模板到 {}: {e}", target.display()))?;
+    println!("配置模板已写入: {}", target.display());
     Ok(())
 }

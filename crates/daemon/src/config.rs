@@ -4,10 +4,95 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveTime;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 /// Environment variable holding the Jira password (kept out of the config file).
 pub const JIRA_PASS_ENV: &str = "DAILYREPORT_JIRA_PASS";
+
+/// A check time that can be a single time or a range (for random scheduling).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckTime {
+    /// Fixed time every day.
+    Single(NaiveTime),
+    /// Random time within [start, end) each day.
+    Range(NaiveTime, NaiveTime),
+}
+
+impl Default for CheckTime {
+    fn default() -> Self {
+        CheckTime::Single(NaiveTime::from_hms_opt(13, 0, 0).unwrap())
+    }
+}
+
+impl CheckTime {
+    /// Resolve to a concrete `NaiveTime`. For `Range`, picks a random minute
+    /// within `[start, end)` each time it is called.
+    pub fn resolve(&self) -> NaiveTime {
+        match self {
+            CheckTime::Single(t) => *t,
+            CheckTime::Range(start, end) => {
+                let total_minutes = (*end - *start).num_minutes();
+                if total_minutes <= 1 {
+                    return *start;
+                }
+                let offset = rand::rng().random_range(0..total_minutes);
+                *start + chrono::Duration::minutes(offset)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CheckTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CheckTime::Single(t) => write!(f, "{}", t.format("%H:%M")),
+            CheckTime::Range(s, e) => write!(f, "{}-{}", s.format("%H:%M"), e.format("%H:%M")),
+        }
+    }
+}
+
+impl serde::Serialize for CheckTime {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            CheckTime::Single(t) => serializer.serialize_str(&t.format("%H:%M").to_string()),
+            CheckTime::Range(s, e) => {
+                serializer.serialize_str(&format!("{}-{}", s.format("%H:%M"), e.format("%H:%M")))
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CheckTime {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        // Try single time first.
+        if let Ok(t) = NaiveTime::parse_from_str(&s, "%H:%M") {
+            return Ok(CheckTime::Single(t));
+        }
+        // Try range "HH:MM-HH:MM".
+        let parts: Vec<&str> = s.splitn(2, '-').collect();
+        if parts.len() == 2 {
+            // But only if both parts look like HH:MM (not a negative time like "-09:00").
+            if let (Ok(start), Ok(end)) = (
+                NaiveTime::parse_from_str(parts[0], "%H:%M"),
+                NaiveTime::parse_from_str(parts[1], "%H:%M"),
+            ) {
+                if start >= end {
+                    return Err(serde::de::Error::custom(format!(
+                        "check_time range start must be before end: '{}'",
+                        s
+                    )));
+                }
+                return Ok(CheckTime::Range(start, end));
+            }
+        }
+        Err(serde::de::Error::custom(format!(
+            "invalid check_time '{}', expected HH:MM or HH:MM-HH:MM",
+            s
+        )))
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repo {
@@ -19,6 +104,10 @@ pub struct Repo {
     /// global `git_email` and over `git config user.email`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_email: Option<String>,
+    /// Per-repo prompt file (relative to `local_path`). When present and the
+    /// file exists at runtime, its content replaces the default system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -33,9 +122,9 @@ pub struct Config {
     #[serde(default = "default_tempo_version")]
     pub tempo_version: u32,
     pub worker: String,
-    /// Time of day the pipeline runs each day (HH:MM).
+    /// Time of day the pipeline runs each day (HH:MM or HH:MM-HH:MM for random).
     #[serde(default = "default_check_time")]
-    pub check_time: String,
+    pub check_time: CheckTime,
     /// Window start (HH:MM) — only commits at/after this time count.
     #[serde(default = "default_work_start")]
     pub work_start: String,
@@ -120,7 +209,7 @@ impl Config {
         if self.repos.is_empty() {
             bail!("at least one [[repos]] entry is required");
         }
-        let _ = parse_hhmm(&self.check_time)?;
+        // check_time is validated during deserialization (CheckTime).
         let _ = parse_hhmm(&self.work_start)?;
         let _ = parse_hhmm(&self.work_end)?;
         if let Some(ws) = self.worklog_start.as_deref() {
@@ -138,6 +227,9 @@ impl Config {
             }
             if r.git_email.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
                 bail!("repo {} has an empty git_email", r.local_path.display());
+            }
+            if r.prompt_file.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
+                bail!("repo {} has an empty prompt_file", r.local_path.display());
             }
         }
         if self.git_email.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
@@ -200,15 +292,15 @@ impl Config {
         }
     }
     pub fn check_time(&self) -> NaiveTime {
-        parse_hhmm(&self.check_time).expect("validated")
+        self.check_time.resolve()
     }
 }
 
 fn default_tempo_version() -> u32 {
     4
 }
-fn default_check_time() -> String {
-    "13:00".into()
+fn default_check_time() -> CheckTime {
+    CheckTime::default()
 }
 fn default_work_start() -> String {
     "09:00".into()
@@ -267,7 +359,7 @@ issue_key = "BKAIZSKXM-5"
         std::env::set_var(JIRA_PASS_ENV, "secret");
         let c = Config::load(&p).unwrap();
         assert_eq!(c.tempo_version, 4);
-        assert_eq!(c.check_time, "13:00");
+        assert_eq!(c.check_time, CheckTime::default());
         assert_eq!(c.work_start, "09:00");
         assert_eq!(c.work_end, "18:00");
         assert_eq!(c.total_daily_seconds, 28800);
@@ -397,8 +489,8 @@ ai_model = "m"
         let dir = tempdir();
         let mut c = cfg(&dir);
         c.git_email = Some("global@corp.com".into());
-        let repo_override = Repo { local_path: dir.join("r1"), issue_key: "A-1".into(), git_email: Some("repo@corp.com".into()) };
-        let repo_inherit = Repo { local_path: dir.join("r2"), issue_key: "A-2".into(), git_email: None };
+        let repo_override = Repo { local_path: dir.join("r1"), issue_key: "A-1".into(), git_email: Some("repo@corp.com".into()), prompt_file: None };
+        let repo_inherit = Repo { local_path: dir.join("r2"), issue_key: "A-2".into(), git_email: None, prompt_file: None };
         assert_eq!(c.resolve_git_email(&repo_override).as_deref(), Some("repo@corp.com"));
         assert_eq!(c.resolve_git_email(&repo_inherit).as_deref(), Some("global@corp.com"));
         c.git_email = None;
@@ -418,7 +510,7 @@ ai_model = "m"
         std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
         std::process::Command::new("git").args(["config", "user.email", "repo-local@corp.com"]).current_dir(&dir).output().unwrap();
         let c = cfg(&dir);
-        let repo = Repo { local_path: dir.clone(), issue_key: "A-1".into(), git_email: None };
+        let repo = Repo { local_path: dir.clone(), issue_key: "A-1".into(), git_email: None, prompt_file: None };
         assert_eq!(c.resolve_git_email(&repo).as_deref(), Some("repo-local@corp.com"));
         std::env::remove_var("GIT_CONFIG_GLOBAL");
         std::env::remove_var("GIT_CONFIG_SYSTEM");
@@ -435,7 +527,7 @@ ai_model = "m"
         std::env::set_var("GIT_CONFIG_SYSTEM", iso.join("system-gitconfig"));
         let dir = tempdir();
         let mut c = cfg(&dir);
-        c.repos = vec![Repo { local_path: dir.join("missing-repo"), issue_key: "A-1".into(), git_email: None }];
+        c.repos = vec![Repo { local_path: dir.join("missing-repo"), issue_key: "A-1".into(), git_email: None, prompt_file: None }];
         assert!(c.check_git_identity().is_err(), "must fail when no identity is resolvable");
         std::env::remove_var("GIT_CONFIG_GLOBAL");
         std::env::remove_var("GIT_CONFIG_SYSTEM");
@@ -451,7 +543,7 @@ ai_model = "m"
             jira_password: None,
             tempo_version: 4,
             worker: "W".into(),
-            check_time: "13:00".into(),
+            check_time: CheckTime::default(),
             work_start: "09:00".into(),
             work_end: "18:00".into(),
             worklog_start: None,

@@ -48,12 +48,20 @@ fn merge_toml(original: &str, cfg: &Config) -> anyhow::Result<String> {
                 } else {
                     tbl.remove("git_email");
                 }
+                if let Some(pf) = &r.prompt_file {
+                    tbl["prompt_file"] = toml_edit::value(pf.as_str());
+                } else {
+                    tbl.remove("prompt_file");
+                }
             } else {
                 let mut tbl = toml_edit::Table::new();
                 tbl["local_path"] = toml_edit::value(r.local_path.display().to_string());
                 tbl["issue_key"] = toml_edit::value(r.issue_key.as_str());
                 if let Some(email) = &r.git_email {
                     tbl["git_email"] = toml_edit::value(email.as_str());
+                }
+                if let Some(pf) = &r.prompt_file {
+                    tbl["prompt_file"] = toml_edit::value(pf.as_str());
                 }
                 aot.push(tbl);
             }
@@ -70,14 +78,18 @@ fn merge_toml(original: &str, cfg: &Config) -> anyhow::Result<String> {
 /// 从 `main.rs::build_clients` 统一搬入（CLI 分支与 PUT 热切换共用）。
 pub fn build_clients(cfg: &Config) -> (Arc<dyn AIClient>, Arc<dyn WorklogStore>) {
     let ai: Arc<dyn AIClient> = Arc::new(OpenAiClient::new(&cfg.ai_base_url, &cfg.ai_api_key, &cfg.ai_model));
-    let store: Arc<dyn WorklogStore> = Arc::new(TempoClient::new(
+    let tempo = TempoClient::new(
         &cfg.jira_base_url,
         &cfg.jira_user,
         &cfg.jira_password(),
         cfg.tempo_version,
         &cfg.worker,
         &cfg.worklog_search_path,
-    ));
+    );
+    if let Err(e) = tempo.login() {
+        tracing::warn!("Jira 登录失败（后续 API 调用可能会 401）: {e}");
+    }
+    let store: Arc<dyn WorklogStore> = Arc::new(tempo);
     (ai, store)
 }
 
@@ -123,6 +135,9 @@ pub fn write(path: &Path, hot: &HotConfig, old: &Config, incoming_in: serde_json
         for repo in repos {
             if repo.get("git_email").and_then(|v| v.as_str()).is_some_and(|s| s.trim().is_empty()) {
                 repo["git_email"] = serde_json::Value::Null;
+            }
+            if repo.get("prompt_file").and_then(|v| v.as_str()).is_some_and(|s| s.trim().is_empty()) {
+                repo["prompt_file"] = serde_json::Value::Null;
             }
         }
     }
@@ -199,10 +214,11 @@ mod tests {
         in_["jira_password"] = serde_json::Value::Null; // 省略 → 沿用
         in_["ai_api_key"] = serde_json::json!(""); // 空串 → 沿用
         let new = config_io::write(&p, &hot, &c, in_).unwrap();
-        assert_eq!(new.check_time, "23:45");
-        assert_eq!(hot.get().check_time, "23:45");
+        let expected = crate::config::CheckTime::Single(chrono::NaiveTime::from_hms_opt(23, 45, 0).unwrap());
+        assert_eq!(new.check_time, expected);
+        assert_eq!(hot.get().check_time, expected);
         let on_disk = Config::load(&p).unwrap();
-        assert_eq!(on_disk.check_time, "23:45");
+        assert_eq!(on_disk.check_time, expected);
         assert_eq!(on_disk.jira_password.as_deref(), Some("old-pass"));
         assert_eq!(on_disk.ai_api_key, "old-key");
         assert!(!d.join("config.toml.tmp").exists());
@@ -221,7 +237,7 @@ mod tests {
         in_["check_time"] = "25:99".into();
         assert!(config_io::write(&p, &hot, &c, in_).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
-        assert_eq!(hot.get().check_time, "13:00");
+        assert_eq!(hot.get().check_time, crate::config::CheckTime::default());
         assert!(!d.join("config.toml.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -285,7 +301,7 @@ mod tests {
         in_["check_time"] = "23:45".into(); // 只改一个值
 
         let new = config_io::write(&p, &hot, &c2, in_).unwrap();
-        assert_eq!(new.check_time, "23:45");
+        assert_eq!(new.check_time, crate::config::CheckTime::Single(chrono::NaiveTime::from_hms_opt(23, 45, 0).unwrap()));
 
         let saved = std::fs::read_to_string(&p).unwrap();
         assert!(saved.contains("# Jira 配置"), "应保留 Jira 注释: {saved}");

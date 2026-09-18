@@ -43,6 +43,9 @@ enum Cmd {
         /// 只生成并保存 .log，不写入 Tempo（安全试跑）
         #[arg(long)]
         dry_run: bool,
+        /// 跳过 Web 控制台和系统托盘，纯命令行常驻
+        #[arg(long)]
+        no_gui: bool,
     },
     /// 一次性就绪检查：Jira 是否可达 + 各 issue 是否已写昨天的工时
     Check,
@@ -176,20 +179,87 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Check => cmd_check(&cfg, store.as_ref()),
-        Cmd::Run { date, dry_run } => {
+        Cmd::Run { date, dry_run, no_gui } => {
             if let Some(d) = date {
                 let date = parse_date(&d)?;
                 pipeline::run_day(&cfg, date, &*ai, &*store, dry_run)?;
             } else {
-                let hot = Arc::new(daily_report::hotconfig::HotConfig::new(cfg));
-                let last = std::sync::Arc::new(std::sync::Mutex::new(daily_report::web::LastRun::default()));
+                let hot = Arc::new(daily_report::hotconfig::HotConfig::new(cfg.clone()));
+                let last = Arc::new(std::sync::Mutex::new(daily_report::web::LastRun::default()));
                 let last2 = last.clone();
                 let on_done: Box<dyn Fn(daily_report::pipeline::DayOutcome, Option<String>) + Send + Sync> =
                     Box::new(move |o, e| {
                         let mut g = last2.lock().unwrap_or_else(|x| x.into_inner());
                         *g = daily_report::web::LastRun::from_outcome(&o, e.as_deref());
                     });
-                scheduler::run_resident(hot, ai, store, on_done);
+
+                if !no_gui {
+                    // Web + 托盘模式
+                    let addr = "127.0.0.1:8765";
+                    let listener = match std::net::TcpListener::bind(addr) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            tracing::error!("Web 服务启动失败（{} 可能被占用）: {e}", addr);
+                            std::process::exit(1);
+                        }
+                    };
+                    listener.set_nonblocking(true).ok();
+
+                    let ctx = daily_report::web::WebCtx(Arc::new(daily_report::web::InnerCtx {
+                        hot: hot.clone(),
+                        config_path: cli.config.clone(),
+                        last: last.clone(),
+                        ai: Arc::new(std::sync::RwLock::new(ai.clone())),
+                        store: Arc::new(std::sync::RwLock::new(store.clone())),
+                    }));
+
+                    // actix-web 服务在独立 tokio 线程运行
+                    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+                    std::thread::spawn(move || {
+                        let rt = match tokio::runtime::Runtime::new() {
+                            Ok(rt) => rt,
+                            Err(e) => { let _ = tx.send(Err(e.to_string())); return; }
+                        };
+                        rt.block_on(async {
+                            let srv = actix_web::HttpServer::new(move || {
+                                daily_report::web::build_app(ctx.clone())
+                            })
+                            .listen(listener)
+                            .expect("listen");
+                            let _ = tx.send(Ok(()));
+                            if let Err(e) = srv.run().await {
+                                tracing::error!("actix-web 异常退出: {e}");
+                            }
+                        });
+                    });
+                    match rx.recv() {
+                        Ok(Ok(())) => {
+                            tracing::info!("Web 控制台: http://{}", addr);
+                        }
+                        Ok(Err(e)) => {
+                            tracing::error!("Web 服务启动失败: {e}");
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            tracing::error!("Web 线程通道异常: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+
+                    // 托盘
+                    if let Err(e) = daily_report::tray::spawn(&format!("http://{}", addr)) {
+                        tracing::warn!("托盘启动失败（无 GUI 环境？）: {e}");
+                    }
+                } else {
+                    tracing::info!("--no-gui：跳过 Web 与托盘");
+                }
+
+                // scheduler 在独立 std 线程（内部 thread::sleep 循环）
+                std::thread::spawn(move || {
+                    scheduler::run_resident(hot, ai, store, on_done);
+                });
+                // 主线程保持存活（托盘"退出"走 process::exit；Ctrl+C 直接杀进程）
+                std::thread::park();
             }
             Ok(())
         }

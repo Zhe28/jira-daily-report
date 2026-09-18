@@ -17,4 +17,5 @@ pub mod state;
 pub mod notify;
 pub mod pipeline;
 pub mod scheduler;
+pub mod tray;
 pub mod web;

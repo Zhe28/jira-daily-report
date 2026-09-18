@@ -55,6 +55,20 @@ pub fn write(path: &Path, hot: &HotConfig, old: &Config, incoming_in: serde_json
         incoming["ai_api_key"] = serde_json::json!(&old.ai_api_key);
     }
 
+    // 规范化：可选字段中空字符串 → null（反序列化后为 None，避免 validate 拒绝）
+    for field in ["git_email", "worklog_start"] {
+        if incoming.get(field).and_then(|v| v.as_str()).is_some_and(|s| s.trim().is_empty()) {
+            incoming[field] = serde_json::Value::Null;
+        }
+    }
+    if let Some(repos) = incoming.get_mut("repos").and_then(|v| v.as_array_mut()) {
+        for repo in repos {
+            if repo.get("git_email").and_then(|v| v.as_str()).is_some_and(|s| s.trim().is_empty()) {
+                repo["git_email"] = serde_json::Value::Null;
+            }
+        }
+    }
+
     // 2) 整份校验（deny_unknown_fields 在反序列化时已生效）
     let cfg: Config = serde_json::from_value(incoming)
         .map_err(|e| anyhow::anyhow!("配置解析失败: {e}"))?;
@@ -182,6 +196,33 @@ mod tests {
         // Config::load 本身会 validate（无密码 → Err），这里只验证文件未被改动
         let on_disk_raw = std::fs::read_to_string(&p).unwrap();
         assert!(!on_disk_raw.contains("jira_password"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn write_normalizes_empty_optional_fields() {
+        let d = testutil::tmp();
+        // 初始化 git repo（check_git_identity 需要能解析 user.email）
+        std::process::Command::new("git").args(["init"]).current_dir(&d).output().ok();
+        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(&d).output().ok();
+
+        let mut c = testutil::cfg_with_repo(&d);
+        c.jira_password = Some("old-pass".into());
+        c.repos[0].git_email = None; // 不在 config 中设置，依赖 git config fallback
+        let p = d.join("config.toml");
+        std::fs::write(&p, toml::to_string_pretty(&c).unwrap()).unwrap();
+        let hot = HotConfig::new(c.clone());
+
+        let mut in_ = serde_json::to_value(&c).unwrap();
+        in_["git_email"] = serde_json::json!("");               // 前端发来的空串
+        in_["repos"][0]["git_email"] = serde_json::json!("");   // 同上
+        in_["jira_password"] = serde_json::Value::Null;         // 省略 → 沿用
+        in_["ai_api_key"] = serde_json::json!("");              // 空串 → 沿用
+
+        let new = config_io::write(&p, &hot, &c, in_).unwrap();
+        assert!(new.git_email.is_none(), "空串应被规范化为 None");
+        assert!(new.repos[0].git_email.is_none(), "repo 空串应被规范化为 None");
+        assert_eq!(new.jira_password.as_deref(), Some("old-pass")); // 沿用旧值
         let _ = std::fs::remove_dir_all(&d);
     }
 }

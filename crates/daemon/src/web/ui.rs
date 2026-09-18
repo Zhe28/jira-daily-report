@@ -70,8 +70,9 @@ mod tests {
     use crate::web::testutil;
 
     #[actix_web::test]
-    async fn spa_degrades_when_frontend_not_built() {
-        // 开发期 assets/web/ 只有 .placeholder → 期望降级文本
+    async fn spa_serves_index_html_or_degraded() {
+        // 前端已构建时返回 index.html，未构建时返回降级文本。
+        // 两种情况下所有路径都应返回 200（不 404）。
         let d = testutil::tmp();
         let ctx = testutil::ctx_for(&d);
         let app = test::init_service(build_app(ctx)).await;
@@ -85,7 +86,10 @@ mod tests {
         let req = actix_web::test::TestRequest::get().uri("/").to_request();
         let body = actix_web::test::read_body(actix_web::test::call_service(&app, req).await).await;
         let s = String::from_utf8_lossy(&body).into_owned();
-        assert!(s.contains("前端未构建"), "body: {s}");
+        assert!(
+            s.contains("前端未构建") || s.contains("<!DOCTYPE html"),
+            "body 应为降级文本或 index.html: {s}"
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }

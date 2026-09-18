@@ -8,6 +8,7 @@
 jira_base_url = "http://114.215.252.122:8080"
 jira_user     = ""          # 你的 Jira/Crowd 用户名
 # jira_password = "你的jira密码"    # 可选；设了环境变量 DAILYREPORT_JIRA_PASS 时忽略
+#                                      GUI 配置页中留空 = 保持原值不变
 tempo_version = 4                  # Tempo REST API 版本
 worker        = ""    # 你的 Jira 内部用户 id， 这个可以在工时表url最后一个字段获取
 
@@ -26,7 +27,7 @@ holidays_dir  = "C:\\Users\\asdf\\Desktop\\jira-report\\holidays" # holidays-<ye
 
 # OpenAI 兼容 AI 网关
 ai_base_url   = "http://127.0.0.1:8000/v1"   # 改成你的 AI endpoint
-ai_api_key    = "sk-xxx"
+ai_api_key    = "sk-xxx"           # GUI 配置页中留空 = 保持原值不变
 ai_model      = "gpt-4o"                     # 改成你的模型名
 
 # Tempo worklog 查询接口（已验证：POST 到此路径，body 为 {"worker":[...],"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}）

@@ -25,17 +25,23 @@
 ## 环境要求与构建
 
 - Rust 工具链（edition 2021）
+- Node.js 18+（仅构建前端 GUI 时需要）
 - `git` 命令在 PATH 中
 - 能访问配置的 Jira 地址与 AI 端点
 
 ```bash
+# 1. 构建前端（可选，不构建则 exe 显示降级提示页）
+npm --prefix web install
+npm --prefix web run build
+
+# 2. 构建 Rust
 cargo build --release
-# 产物：target\release\daily-report.exe（常驻运行用 release 版本）
+# 产物：target\release\daily-report.exe
 ```
 
-> 修改代码后记得重新 `cargo build --release`——常驻跑的是 release 二进制，不重建不会生效。
+> 修改代码后记得重新 `cargo build --release`——常驻跑的是 release 二进制，不重建不会生效。改前端后需先 `npm --prefix web run build` 再 `cargo build --release`（rust-embed 在编译时嵌入）。
 
-主要依赖：reqwest（blocking，rustls TLS）、clap、chrono、serde/toml、tracing、anyhow/thiserror、rand（随机开工时间）、dirs、wait-timeout。
+主要依赖：reqwest（blocking，rustls TLS）、clap、chrono、serde/toml、tracing、anyhow/thiserror、dirs、wait-timeout、actix-web、rust-embed、tray-icon。
 
 ## 配置
 
@@ -121,13 +127,27 @@ cargo build --release
 daily-report check                          # 一次性就绪检查：Jira 是否可达 + 各 issue 昨天是否已写工时（不写入）
 daily-report run --date 2026-09-09 --dry-run  # 试跑某天：生成并保存 .log，但不写 Jira
 daily-report fill --date 2026-09-09 [--dry-run]  # 手动对某一天执行补填（仍会先查重，已有则跳过）
-daily-report run                            # 常驻运行：启动补跑 + 每天到点循环
+daily-report run                            # 常驻运行：启动补跑 + 每天到点循环（含 Web 控制台 + 托盘）
+daily-report run --no-gui                   # 常驻运行：纯命令行，不启动 Web 和托盘
 ```
 
 - **常驻模式**（`run`，不带 `--date`）：启动时若已过当天 `check_time`，立即补跑昨天；之后每天到 `check_time` 自动补填昨天。每个循环会提示"下次写日志：\<时间\>（约 N 秒后），届时自动补填 \<昨天\> 的日报"（控制台 + Windows toast）。
 - **`--dry-run`**：只生成并保存 `.log`，不写入 Tempo，适合先验证日报内容。
 
 建议流程：先 `check` 确认 Jira 可达 → `run --date … --dry-run` 试跑看生成的日报 → 满意后 `run` 常驻。
+
+## GUI 控制中心
+
+常驻模式（`run`，不带 `--date`）默认启动 Web 控制台和系统托盘：
+
+- **Web 控制台**：`http://127.0.0.1:8765`（仅本机访问，无鉴权）
+  - **状态页**（`/`）：今天/昨天的处理状态、下次触发时间、最近一次执行摘要
+  - **配置页**（`/config`）：在线编辑配置，保存后即时热生效（无需重启）
+- **系统托盘**：蓝色圆点图标，右键菜单"打开 UI"（打开浏览器）/ "退出"
+- **`--no-gui`**：跳过 Web 和托盘，纯命令行常驻（日志双写行为不变）
+- **敏感字段**：配置页中 `jira_password` 和 `ai_api_key` 留空 = 保持原值不变，不会清空
+
+前端需先构建（`npm --prefix web run build`），否则浏览器打开显示"前端未构建"降级提示。
 
 ## 行为与边界
 
@@ -148,23 +168,44 @@ daily-report run                            # 常驻运行：启动补跑 + 每�
 | 改了代码但行为没变 | 常驻用的是 `target\release\daily-report.exe`，改代码后必须 `cargo build --release` 再重启 |
 | `Jira 密码未找到：…` | 设置环境变量 `DAILYREPORT_JIRA_PASS`，或在 `config.toml` 中填写 `jira_password` |
 | `invalid date` / 配置解析错误 | 检查日期格式（`YYYY-MM-DD`）与 TOML 字段名（`deny_unknown_fields`，拼错字段名会直接报错） |
+| `8765 端口被占用` / `Web 服务启动失败` | 另一个 daily-report 已在跑，或手动 `taskkill` 结束占用进程 |
+| 浏览器打开显示"前端未构建" | 运行 `npm --prefix web run build` 后重新 `cargo build --release` |
+| 无托盘图标（headless/无 GUI 会话）| 使用 `--no-gui` 模式运行 |
 
 ## 项目结构
 
 ```
-src/
-  main.rs          # CLI 入口（clap：check / run / fill）
-  config.rs        # config.toml 解析、校验、密码来源
-  pipeline.rs      # 单天处理主流程（run_day）
-  scheduler.rs     # 常驻调度：启动补跑 + 每日到点循环
-  git_collector.rs # 调用系统 git 收集窗口内提交
-  worklog_plan.rs  # 8h 工时分配/拆分规则
-  reporter.rs      # OpenAI 兼容端点客户端 + 日报提示词
-  tempo.rs         # Jira + Tempo REST 客户端（Basic Auth，blocking）
-  holidays.rs      # holidays-<year>.json 加载与节假日判断
-  logfile.rs       # 合并 .log 文件渲染与写出
-  state.rs         # state.json（已处理日期、草稿）
-  notify.rs        # 控制台 + Windows toast 通知
-tests/             # 集成测试
+crates/daemon/
+  src/
+    main.rs          # CLI 入口（clap：check / run / fill）
+    config.rs        # config.toml 解析、校验、密码来源
+    pipeline.rs      # 单天处理主流程（run_day）
+    scheduler.rs     # 常驻调度：启动补跑 + 每日到点循环
+    hotconfig.rs     # 运行时可热替换的配置（Arc<RwLock<Config>>）
+    git_collector.rs # 调用系统 git 收集窗口内提交
+    worklog_plan.rs  # 8h 工时分配/拆分规则
+    reporter.rs      # OpenAI 兼容端点客户端 + 日报提示词
+    tempo.rs         # Jira + Tempo REST 客户端（Basic Auth，blocking）
+    holidays.rs      # holidays-<year>.json 加载与节假日判断
+    logfile.rs       # 合并 .log 文件渲染与写出 + 按天日志双写
+    state.rs         # state.json（已处理日期、草稿、跳过原因）
+    notify.rs        # 控制台 + Windows toast 通知
+    tray.rs          # 系统托盘（蓝色圆点 + 打开 UI/退出菜单）
+    web/
+      mod.rs         # Web 层路由装配 + WebCtx/LastRun
+      api.rs         # JSON API handlers（health/status/config）
+      config_io.rs   # 配置读写（GET 掩码/PUT 校验+原子写+热生效）
+      ui.rs          # 内嵌前端静态资源 + SPA fallback
+  tests/             # 集成测试
+  assets/web/        # 前端构建产物（rust-embed 编译时嵌入，gitignore）
+web/                 # 前端工程（Vite + Vue 3 + Element Plus）
+  src/
+    main.js          # Vue 入口
+    App.vue          # 壳：侧边栏 + 在线检测
+    router.js        # 路由（/ 状态页，/config 配置页）
+    api.js           # fetch 封装
+    views/
+      StatusPage.vue # 状态页（今天/昨天徽章、下次触发、最近执行）
+      ConfigPage.vue # 配置页（分区表单、敏感字段留空=不变）
 config.example.toml  # 配置模板（复制为 config.toml 使用）
 ```

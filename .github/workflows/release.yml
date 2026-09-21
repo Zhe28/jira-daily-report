@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -39,10 +39,13 @@ jobs:
 
       - name: Package
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)
-          if [ -z "$VERSION" ]; then echo "version not found" >&2; exit 1; fi
-          echo "VERSION=v$VERSION" >> "$GITHUB_ENV"
-          echo "ZIP_NAME=daily-report-v${VERSION}-windows-x64.zip" >> "$GITHUB_ENV"
+          VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)
+          if [ -z "$VER" ]; then echo "version not found" >&2; exit 1; fi
+          VERSION="v$VER"
+          ZIP_NAME="daily-report-${VERSION}-windows-x64.zip"
+          # export for the subsequent Publish step
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
 
           mkdir -p dist
           cp target/x86_64-pc-windows-gnu/release/daily-report.exe dist/

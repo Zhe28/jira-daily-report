@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Build exe (cross-compile to Windows)
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Package
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)
+          if [ -z "$VERSION" ]; then echo "version not found" >&2; exit 1; fi
+          echo "VERSION=v$VERSION" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=daily-report-v${VERSION}-windows-x64.zip" >> "$GITHUB_ENV"
+
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/daily-report.exe dist/
+          cp config.example.toml dist/
+          cp README.md dist/
+          (cd dist && zip -r "$ZIP_NAME" .)
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          files: dist/${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true

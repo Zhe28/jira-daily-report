@@ -13,9 +13,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use daily_report::config::Config;
-use daily_report::scheduler;
 use daily_report::pipeline::{self, WorklogStore};
 use daily_report::reporter::AIClient;
+use daily_report::scheduler;
 
 const EXAMPLE_CONFIG: &str = include_str!("../../../config.example.toml");
 
@@ -77,7 +77,8 @@ fn build_clients(cfg: &Config) -> (Arc<dyn AIClient>, Arc<dyn WorklogStore>) {
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| anyhow::anyhow!("invalid date '{}': {e}", s))
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|e| anyhow::anyhow!("invalid date '{}': {e}", s))
 }
 
 /// 日志初始化：resident=true 时写 `<log_dir>/daemon-<日期>.log`（按天）+ 控制台双写，
@@ -112,7 +113,11 @@ struct DailyLogFile {
 
 impl DailyLogFile {
     fn new(dir: std::path::PathBuf) -> Self {
-        Self { dir, current_date: None, file: None }
+        Self {
+            dir,
+            current_date: None,
+            file: None,
+        }
     }
 
     fn ensure_open(&mut self) -> std::io::Result<()> {
@@ -121,8 +126,13 @@ impl DailyLogFile {
             return Ok(());
         }
         std::fs::create_dir_all(&self.dir)?;
-        let path = self.dir.join(format!("daemon-{}.log", today.format("%Y-%m-%d")));
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let path = self
+            .dir
+            .join(format!("daemon-{}.log", today.format("%Y-%m-%d")));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         self.file = Some(file);
         self.current_date = Some(today);
         Ok(())
@@ -149,7 +159,10 @@ struct MultiWriter {
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MultiWriter {
     type Writer = MultiWriteAdapter<'a>;
     fn make_writer(&'a self) -> Self::Writer {
-        MultiWriteAdapter { file: self.file.clone(), console: std::io::stdout().lock() }
+        MultiWriteAdapter {
+            file: self.file.clone(),
+            console: std::io::stdout().lock(),
+        }
     }
 }
 struct MultiWriteAdapter<'a> {
@@ -193,7 +206,11 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Check => cmd_check(&cfg, store.as_ref()),
-        Cmd::Run { date, dry_run, no_gui } => {
+        Cmd::Run {
+            date,
+            dry_run,
+            no_gui,
+        } => {
             if let Some(d) = date {
                 let date = parse_date(&d)?;
                 pipeline::run_day(&cfg, date, &*ai, &*store, dry_run)?;
@@ -201,11 +218,12 @@ fn main() -> Result<()> {
                 let hot = Arc::new(daily_report::hotconfig::HotConfig::new(cfg.clone()));
                 let last = Arc::new(std::sync::Mutex::new(daily_report::web::LastRun::default()));
                 let last2 = last.clone();
-                let on_done: Box<dyn Fn(daily_report::pipeline::DayOutcome, Option<String>) + Send + Sync> =
-                    Box::new(move |o, e| {
-                        let mut g = last2.lock().unwrap_or_else(|x| x.into_inner());
-                        *g = daily_report::web::LastRun::from_outcome(&o, e.as_deref());
-                    });
+                let on_done: Box<
+                    dyn Fn(daily_report::pipeline::DayOutcome, Option<String>) + Send + Sync,
+                > = Box::new(move |o, e| {
+                    let mut g = last2.lock().unwrap_or_else(|x| x.into_inner());
+                    *g = daily_report::web::LastRun::from_outcome(&o, e.as_deref());
+                });
 
                 if !no_gui {
                     // Web + 托盘模式
@@ -232,7 +250,10 @@ fn main() -> Result<()> {
                     std::thread::spawn(move || {
                         let rt = match tokio::runtime::Runtime::new() {
                             Ok(rt) => rt,
-                            Err(e) => { let _ = tx.send(Err(e.to_string())); return; }
+                            Err(e) => {
+                                let _ = tx.send(Err(e.to_string()));
+                                return;
+                            }
                         };
                         rt.block_on(async {
                             let srv = actix_web::HttpServer::new(move || {
@@ -308,8 +329,12 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
                     // evening/overtime entries (started >= work_end). A
                     // `None` entry (unparseable started) blocks both buckets.
                     let we = cfg.work_end_time();
-                    let day = times.iter().any(|t| t.is_none() || t.is_some_and(|t| t < we));
-                    let evening = times.iter().any(|t| t.is_none() || t.is_some_and(|t| t >= we));
+                    let day = times
+                        .iter()
+                        .any(|t| t.is_none() || t.is_some_and(|t| t < we));
+                    let evening = times
+                        .iter()
+                        .any(|t| t.is_none() || t.is_some_and(|t| t >= we));
                     let mut marks = Vec::new();
                     if day {
                         marks.push("[已写-日常]");
@@ -320,7 +345,12 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
                     if marks.is_empty() {
                         marks.push("[未写]");
                     }
-                    println!("{} {} ({})", marks.join(" "), r.issue_key, r.local_path.display());
+                    println!(
+                        "{} {} ({})",
+                        marks.join(" "),
+                        r.issue_key,
+                        r.local_path.display()
+                    );
                 }
                 Err(e) => println!("[检查失败] {}: {e}", r.issue_key),
             },

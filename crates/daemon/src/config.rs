@@ -182,8 +182,8 @@ impl Config {
     pub fn load(path: &std::path::Path) -> Result<Config> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
-        let cfg: Config =
-            toml::from_str(&raw).with_context(|| format!("parsing config file {}", path.display()))?;
+        let cfg: Config = toml::from_str(&raw)
+            .with_context(|| format!("parsing config file {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -199,7 +199,11 @@ impl Config {
             bail!("worker must not be empty");
         }
         let env_pass = std::env::var(JIRA_PASS_ENV).ok();
-        let cfg_pass = self.jira_password.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let cfg_pass = self
+            .jira_password
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if env_pass.as_deref().map(str::trim).is_none_or(str::is_empty) && cfg_pass.is_none() {
             bail!(
                 "Jira 密码未找到：请设置环境变量 {}，或在 config.toml 中填写 jira_password",
@@ -231,14 +235,27 @@ impl Config {
             if r.issue_key.trim().is_empty() {
                 bail!("a repo has an empty issue_key");
             }
-            if r.git_email.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
+            if r.git_email
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| s.is_empty())
+            {
                 bail!("repo {} has an empty git_email", r.local_path.display());
             }
-            if r.prompt_file.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
+            if r.prompt_file
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| s.is_empty())
+            {
                 bail!("repo {} has an empty prompt_file", r.local_path.display());
             }
         }
-        if self.git_email.as_deref().map(str::trim).is_some_and(|s| s.is_empty()) {
+        if self
+            .git_email
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| s.is_empty())
+        {
             bail!("git_email must not be empty (omit the field instead of setting it to \"\")");
         }
         Ok(())
@@ -318,7 +335,9 @@ fn default_total_seconds() -> u64 {
     28800
 }
 fn default_log_dir() -> PathBuf {
-    dirs::desktop_dir().unwrap_or_else(std::env::temp_dir).join("jira-report")
+    dirs::desktop_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("jira-report")
 }
 fn default_holidays_dir() -> PathBuf {
     default_log_dir().join("holidays")
@@ -411,10 +430,7 @@ ai_model = "m"
         std::env::set_var(JIRA_PASS_ENV, "secret");
         let dir = tempdir();
         let p = dir.join("config.toml");
-        let body = sample().replace(
-            "[[repos]]",
-            "worklog_start = \"09:00\"\n[[repos]]",
-        );
+        let body = sample().replace("[[repos]]", "worklog_start = \"09:00\"\n[[repos]]");
         std::fs::write(&p, body).unwrap();
         let c = Config::load(&p).unwrap();
         assert_eq!(
@@ -422,15 +438,9 @@ ai_model = "m"
             NaiveTime::from_hms_opt(9, 0, 0).unwrap()
         );
         // A range is no longer supported and must be rejected.
-        let body = sample().replace(
-            "[[repos]]",
-            "worklog_start = \"09:00-10:00\"\n[[repos]]",
-        );
+        let body = sample().replace("[[repos]]", "worklog_start = \"09:00-10:00\"\n[[repos]]");
         std::fs::write(&p, body).unwrap();
-        assert!(
-            Config::load(&p).is_err(),
-            "range format must be rejected"
-        );
+        assert!(Config::load(&p).is_err(), "range format must be rejected");
     }
 
     #[test]
@@ -471,10 +481,7 @@ ai_model = "m"
         let p = dir.join("config.toml");
         std::fs::write(&p, sample()).unwrap();
         let err = Config::load(&p).unwrap_err().to_string();
-        assert!(
-            err.contains("Jira 密码未找到"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("Jira 密码未找到"), "unexpected error: {err}");
     }
 
     #[test]
@@ -507,10 +514,26 @@ ai_model = "m"
         let dir = tempdir();
         let mut c = cfg(&dir);
         c.git_email = Some("global@corp.com".into());
-        let repo_override = Repo { local_path: dir.join("r1"), issue_key: "A-1".into(), git_email: Some("repo@corp.com".into()), prompt_file: None };
-        let repo_inherit = Repo { local_path: dir.join("r2"), issue_key: "A-2".into(), git_email: None, prompt_file: None };
-        assert_eq!(c.resolve_git_email(&repo_override).as_deref(), Some("repo@corp.com"));
-        assert_eq!(c.resolve_git_email(&repo_inherit).as_deref(), Some("global@corp.com"));
+        let repo_override = Repo {
+            local_path: dir.join("r1"),
+            issue_key: "A-1".into(),
+            git_email: Some("repo@corp.com".into()),
+            prompt_file: None,
+        };
+        let repo_inherit = Repo {
+            local_path: dir.join("r2"),
+            issue_key: "A-2".into(),
+            git_email: None,
+            prompt_file: None,
+        };
+        assert_eq!(
+            c.resolve_git_email(&repo_override).as_deref(),
+            Some("repo@corp.com")
+        );
+        assert_eq!(
+            c.resolve_git_email(&repo_inherit).as_deref(),
+            Some("global@corp.com")
+        );
         c.git_email = None;
         // No config field anywhere, and r1/r2 are not git repos -> unresolved.
         assert!(c.resolve_git_email(&repo_inherit).is_none());
@@ -525,11 +548,27 @@ ai_model = "m"
         std::env::set_var("GIT_CONFIG_GLOBAL", iso.join("global-gitconfig"));
         std::env::set_var("GIT_CONFIG_SYSTEM", iso.join("system-gitconfig"));
         let dir = tempdir();
-        std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
-        std::process::Command::new("git").args(["config", "user.email", "repo-local@corp.com"]).current_dir(&dir).output().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "repo-local@corp.com"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
         let c = cfg(&dir);
-        let repo = Repo { local_path: dir.clone(), issue_key: "A-1".into(), git_email: None, prompt_file: None };
-        assert_eq!(c.resolve_git_email(&repo).as_deref(), Some("repo-local@corp.com"));
+        let repo = Repo {
+            local_path: dir.clone(),
+            issue_key: "A-1".into(),
+            git_email: None,
+            prompt_file: None,
+        };
+        assert_eq!(
+            c.resolve_git_email(&repo).as_deref(),
+            Some("repo-local@corp.com")
+        );
         std::env::remove_var("GIT_CONFIG_GLOBAL");
         std::env::remove_var("GIT_CONFIG_SYSTEM");
         let _ = std::fs::remove_dir_all(&dir);
@@ -545,8 +584,16 @@ ai_model = "m"
         std::env::set_var("GIT_CONFIG_SYSTEM", iso.join("system-gitconfig"));
         let dir = tempdir();
         let mut c = cfg(&dir);
-        c.repos = vec![Repo { local_path: dir.join("missing-repo"), issue_key: "A-1".into(), git_email: None, prompt_file: None }];
-        assert!(c.check_git_identity().is_err(), "must fail when no identity is resolvable");
+        c.repos = vec![Repo {
+            local_path: dir.join("missing-repo"),
+            issue_key: "A-1".into(),
+            git_email: None,
+            prompt_file: None,
+        }];
+        assert!(
+            c.check_git_identity().is_err(),
+            "must fail when no identity is resolvable"
+        );
         std::env::remove_var("GIT_CONFIG_GLOBAL");
         std::env::remove_var("GIT_CONFIG_SYSTEM");
         let _ = std::fs::remove_dir_all(&dir);

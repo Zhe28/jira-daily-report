@@ -38,7 +38,11 @@ impl RepoCommits {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").args(args).current_dir(cwd).output().map_err(|e| e.to_string())?;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -107,9 +111,12 @@ fn parse_log(lines: &[&str]) -> Vec<(String, String, String, String)> {
         .filter_map(|l| {
             let mut it = l.splitn(4, '\t');
             match (it.next(), it.next(), it.next(), it.next()) {
-                (Some(s), Some(d), Some(ce), Some(subj)) => {
-                    Some((s.to_string(), d.to_string(), ce.to_string(), subj.to_string()))
-                }
+                (Some(s), Some(d), Some(ce), Some(subj)) => Some((
+                    s.to_string(),
+                    d.to_string(),
+                    ce.to_string(),
+                    subj.to_string(),
+                )),
                 _ => None,
             }
         })
@@ -123,25 +130,46 @@ fn parse_log(lines: &[&str]) -> Vec<(String, String, String, String)> {
 /// branches, tags) instead of `HEAD`, so commits made on a branch that is not
 /// currently checked out are still found. The committer email then excludes
 /// commits made by other people on shared/remote branches.
-pub fn collect_for(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime, end: NaiveTime) -> RepoCommits {
+pub fn collect_for(
+    repo_path: &Path,
+    email: &str,
+    date: NaiveDate,
+    start: NaiveTime,
+    end: NaiveTime,
+) -> RepoCommits {
     collect_for_range(repo_path, email, date, start, Some(end))
 }
 
 /// Collect this user's commits on `date` from `start` until the end of that
 /// calendar day (overtime pass; `NaiveTime` cannot express 24:00, hence the
 /// dedicated entry point).
-pub fn collect_for_overtime(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime) -> RepoCommits {
+pub fn collect_for_overtime(
+    repo_path: &Path,
+    email: &str,
+    date: NaiveDate,
+    start: NaiveTime,
+) -> RepoCommits {
     collect_for_range(repo_path, email, date, start, None)
 }
 
 /// Core collection. `end = None` keeps every commit on `date` with
 /// `time >= start` (i.e. through the end of the day).
-fn collect_for_range(repo_path: &Path, email: &str, date: NaiveDate, start: NaiveTime, end: Option<NaiveTime>) -> RepoCommits {
+fn collect_for_range(
+    repo_path: &Path,
+    email: &str,
+    date: NaiveDate,
+    start: NaiveTime,
+    end: Option<NaiveTime>,
+) -> RepoCommits {
     let label = repo_path.display().to_string();
 
     // Confirm it's a git work tree.
     if run_git(repo_path, &["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return RepoCommits { repo: label, commits: vec![], error: Some("not a git repo".into()) };
+        return RepoCommits {
+            repo: label,
+            commits: vec![],
+            error: Some("not a git repo".into()),
+        };
     }
 
     // Fetch a superset: everything committed since (date - 1 day) across all
@@ -156,10 +184,22 @@ fn collect_for_range(repo_path: &Path, email: &str, date: NaiveDate, start: Naiv
     let format = "%H%x09%cI%x09%ce%x09%s";
     let raw = match run_git(
         repo_path,
-        &["log", "--all", "--no-color", &format!("--format={format}"), &format!("--since={since}")],
+        &[
+            "log",
+            "--all",
+            "--no-color",
+            &format!("--format={format}"),
+            &format!("--since={since}"),
+        ],
     ) {
         Ok(r) => r,
-        Err(e) => return RepoCommits { repo: label, commits: vec![], error: Some(e) },
+        Err(e) => {
+            return RepoCommits {
+                repo: label,
+                commits: vec![],
+                error: Some(e),
+            }
+        }
     };
 
     let mut commits = Vec::new();
@@ -184,12 +224,27 @@ fn collect_for_range(repo_path: &Path, email: &str, date: NaiveDate, start: Naiv
         }
 
         // Fetch the full patch for this commit.
-        let patch = run_git(repo_path, &["show", "--no-color", "--format=", "--patch", &sha]).unwrap_or_default();
+        let patch = run_git(
+            repo_path,
+            &["show", "--no-color", "--format=", "--patch", &sha],
+        )
+        .unwrap_or_default();
         let (added, removed) = count_diff(&patch);
-        commits.push(Commit { sha, committer_date: cdate, subject, patch, added, removed });
+        commits.push(Commit {
+            sha,
+            committer_date: cdate,
+            subject,
+            patch,
+            added,
+            removed,
+        });
     }
 
-    RepoCommits { repo: label, commits, error: None }
+    RepoCommits {
+        repo: label,
+        commits,
+        error: None,
+    }
 }
 
 /// Collect commits by whoever this machine identifies as (repo-local, then
@@ -217,9 +272,17 @@ mod tests {
         let s = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
         let e = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
         assert!(in_window(NaiveTime::from_hms_opt(9, 0, 0).unwrap(), s, e));
-        assert!(in_window(NaiveTime::from_hms_opt(17, 59, 59).unwrap(), s, e));
+        assert!(in_window(
+            NaiveTime::from_hms_opt(17, 59, 59).unwrap(),
+            s,
+            e
+        ));
         assert!(!in_window(NaiveTime::from_hms_opt(18, 0, 0).unwrap(), s, e));
-        assert!(!in_window(NaiveTime::from_hms_opt(8, 59, 59).unwrap(), s, e));
+        assert!(!in_window(
+            NaiveTime::from_hms_opt(8, 59, 59).unwrap(),
+            s,
+            e
+        ));
     }
 
     #[test]

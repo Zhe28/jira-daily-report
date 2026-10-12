@@ -42,7 +42,12 @@ impl OpenAiClient {
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("build http client");
-        Self { http, base_url: base_url.trim_end_matches('/').into(), api_key: api_key.into(), model: model.into() }
+        Self {
+            http,
+            base_url: base_url.trim_end_matches('/').into(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
     }
 }
 
@@ -69,7 +74,12 @@ impl AIClient for OpenAiClient {
             anyhow::bail!("AI endpoint returned {status}: {text}");
         }
         let parsed: ChatResponse = resp.json().context("parsing AI response")?;
-        let content = parsed.choices.into_iter().next().map(|c| c.message.content).context("AI returned no choices")?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .context("AI returned no choices")?;
         Ok(content.trim().to_string())
     }
 }
@@ -105,11 +115,18 @@ pub fn read_repo_prompt(repo_path: &std::path::Path, prompt_file: &str) -> Optio
             Some(content)
         }
         Ok(_) => {
-            tracing::info!("prompt file {} is empty, using default", full_path.display());
+            tracing::info!(
+                "prompt file {} is empty, using default",
+                full_path.display()
+            );
             None
         }
         Err(e) => {
-            tracing::debug!("prompt file {} not found ({}), using default", full_path.display(), e);
+            tracing::debug!(
+                "prompt file {} not found ({}), using default",
+                full_path.display(),
+                e
+            );
             None
         }
     }
@@ -128,7 +145,11 @@ pub fn truncate_patch(patch: &str, budget: usize) -> String {
 /// Assemble the user prompt: diff (primary) + commit subjects (aux).
 pub fn build_user_prompt(rc: &RepoCommits) -> String {
     let mut out = String::new();
-    out.push_str(&format!("仓库：{}\n提交数：{}\n\n", rc.repo, rc.commits.len()));
+    out.push_str(&format!(
+        "仓库：{}\n提交数：{}\n\n",
+        rc.repo,
+        rc.commits.len()
+    ));
     out.push_str("===== commit 信息（辅助参考）=====\n");
     for c in &rc.commits {
         out.push_str(&format!("- {}\n", c.subject));
@@ -147,7 +168,12 @@ pub fn build_user_prompt(rc: &RepoCommits) -> String {
 
 /// Generate the report text for one repo's commits.
 /// If `custom_prompt` is provided, it replaces the default system prompt.
-pub fn report_repo_commits(client: &dyn AIClient, rc: &RepoCommits, custom_prompt: Option<&str>, overtime: bool) -> Result<String> {
+pub fn report_repo_commits(
+    client: &dyn AIClient,
+    rc: &RepoCommits,
+    custom_prompt: Option<&str>,
+    overtime: bool,
+) -> Result<String> {
     if !rc.has_commits() {
         return Ok(String::new());
     }
@@ -168,7 +194,11 @@ mod tests {
     impl AIClient for Mock {
         fn generate(&self, _system: &str, user: &str) -> Result<String> {
             // Echo a marker proving the diff reached the prompt.
-            Ok(if user.contains("+hello") { "增加测试功能".into() } else { "空".into() })
+            Ok(if user.contains("+hello") {
+                "增加测试功能".into()
+            } else {
+                "空".into()
+            })
         }
     }
 
@@ -205,7 +235,11 @@ mod tests {
     #[test]
     fn empty_repo_yields_empty() {
         let mock = Mock;
-        let empty = RepoCommits { repo: "r".into(), commits: vec![], error: None };
+        let empty = RepoCommits {
+            repo: "r".into(),
+            commits: vec![],
+            error: None,
+        };
         assert_eq!(report_repo_commits(&mock, &empty, None, false).unwrap(), "");
     }
 
@@ -230,7 +264,9 @@ mod tests {
                 Ok("ok".into())
             }
         }
-        let cap = PromptCapture { captured_system: std::sync::Mutex::new(String::new()) };
+        let cap = PromptCapture {
+            captured_system: std::sync::Mutex::new(String::new()),
+        };
         report_repo_commits(&cap, &rc(), Some("my custom prompt"), false).unwrap();
         assert_eq!(*cap.captured_system.lock().unwrap(), "my custom prompt");
     }

@@ -69,7 +69,9 @@ pub struct InnerCtx {
 /// 路由装配唯一入口；后续任务在函数内追加路由，不改签名。
 /// 返回类型用 `App<impl ServiceFactory<...>>`（actix-web 4.15 中 `App` 必须带 endpoint 泛型，
 /// `AppEntry` 为私有，无法直接写 `App<AppEntry>`；`App<()>` 等具体类型无法满足 IntoServiceFactory 约束）。
-pub fn build_app(ctx: WebCtx) -> App<
+pub fn build_app(
+    ctx: WebCtx,
+) -> App<
     impl actix_web::dev::ServiceFactory<
         actix_web::dev::ServiceRequest,
         Config = (),
@@ -110,10 +112,21 @@ pub mod testutil {
         fn issue_id(&self, _k: &str) -> anyhow::Result<u64> {
             Ok(1)
         }
-        fn worklog_started_times(&self, _id: u64, _d: NaiveDate) -> anyhow::Result<Vec<Option<chrono::NaiveTime>>> {
+        fn worklog_started_times(
+            &self,
+            _id: u64,
+            _d: NaiveDate,
+        ) -> anyhow::Result<Vec<Option<chrono::NaiveTime>>> {
             Ok(vec![])
         }
-        fn create_worklog(&self, _id: u64, _s: u64, _c: &str, _st: &str, _b: bool) -> anyhow::Result<u64> {
+        fn create_worklog(
+            &self,
+            _id: u64,
+            _s: u64,
+            _c: &str,
+            _st: &str,
+            _b: bool,
+        ) -> anyhow::Result<u64> {
             Ok(1)
         }
     }
@@ -129,13 +142,24 @@ pub mod testutil {
 
     pub fn base_cfg(log_dir: &std::path::Path) -> crate::config::Config {
         crate::config::Config {
-            jira_base_url: "http://x".into(), jira_user: "u".into(), jira_password: None,
-            tempo_version: 4, worker: "W".into(), check_time: crate::config::CheckTime::default(),
-            work_start: "09:00".into(), work_end: "18:00".into(), worklog_start: None,
-            total_daily_seconds: 28800, overtime: false,
-            log_dir: log_dir.to_path_buf(), holidays_dir: log_dir.join("holidays"),
-            ai_base_url: "http://ai/v1".into(), ai_api_key: "k".into(), ai_model: "m".into(),
-            repos: vec![], git_email: None,
+            jira_base_url: "http://x".into(),
+            jira_user: "u".into(),
+            jira_password: None,
+            tempo_version: 4,
+            worker: "W".into(),
+            check_time: crate::config::CheckTime::default(),
+            work_start: "09:00".into(),
+            work_end: "18:00".into(),
+            worklog_start: None,
+            total_daily_seconds: 28800,
+            overtime: false,
+            log_dir: log_dir.to_path_buf(),
+            holidays_dir: log_dir.join("holidays"),
+            ai_base_url: "http://ai/v1".into(),
+            ai_api_key: "k".into(),
+            ai_model: "m".into(),
+            repos: vec![],
+            git_email: None,
             worklog_search_path: "/rest/tempo-timesheets/4/worklogs/search".into(),
         }
     }

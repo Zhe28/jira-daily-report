@@ -48,10 +48,11 @@ struct IssueRef {
     id: u64,
 }
 
-
 /// Parse a Tempo `started` value ("YYYY-MM-DD HH:MM:SS.000") into its time of day.
 fn parse_started_time(s: &str) -> Option<NaiveTime> {
-    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").ok().map(|dt| dt.time())
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+        .ok()
+        .map(|dt| dt.time())
 }
 
 impl TempoClient {
@@ -76,7 +77,10 @@ impl TempoClient {
             pass: pass.into(),
             version,
             worker: worker.into(),
-            search_path: search_path.trim_start_matches('/').trim_end_matches('/').to_string(),
+            search_path: search_path
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string(),
         }
     }
 
@@ -121,14 +125,16 @@ impl TempoClient {
     /// GET /rest/api/2/issue/{key} -> numeric id.
     pub fn issue_id(&self, issue_key: &str) -> Result<u64> {
         let url = format!("{}/rest/api/2/issue/{}", self.base_url, issue_key);
-        let resp = self.send_with_relogin(|| self.http.get(&url))
+        let resp = self
+            .send_with_relogin(|| self.http.get(&url))
             .with_context(|| format!("lookup issue {issue_key}"))?;
         let status = resp.status();
         if !status.is_success() {
             bail!("Jira issue lookup for {issue_key} returned {status}");
         }
         let raw = resp.text().context("reading issue body")?;
-        let j: IssueJson = serde_json::from_str(&raw).with_context(|| format!("parsing issue {issue_key}"))?;
+        let j: IssueJson =
+            serde_json::from_str(&raw).with_context(|| format!("parsing issue {issue_key}"))?;
         j.id.parse::<u64>()
             .with_context(|| format!("issue {issue_key} id '{}' is not numeric", j.id))
     }
@@ -142,27 +148,42 @@ impl TempoClient {
     /// `issue.id` AND `started` date (both must match). An entry whose
     /// `started` cannot be parsed yields `None` — callers must treat that
     /// conservatively (assume the entry blocks the write).
-    pub fn worklog_started_times(&self, issue_id: u64, date: NaiveDate) -> Result<Vec<Option<NaiveTime>>> {
+    pub fn worklog_started_times(
+        &self,
+        issue_id: u64,
+        date: NaiveDate,
+    ) -> Result<Vec<Option<NaiveTime>>> {
         let day = date.format("%Y-%m-%d").to_string();
-        let search = format!("{}/{}", self.base_url.trim_end_matches('/'), self.search_path.trim_start_matches('/'));
+        let search = format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            self.search_path.trim_start_matches('/')
+        );
         let body = serde_json::json!({
             "worker": [self.worker],
             "from": day,
             "to": day
         });
-        let resp = self.send_with_relogin(|| self.http.post(&search).json(&body))
+        let resp = self
+            .send_with_relogin(|| self.http.post(&search).json(&body))
             .with_context(|| format!("searching worklogs (POST {})", self.search_path))?;
 
         let status = resp.status();
         if !status.is_success() {
-            bail!("worklog search returned {status}: {}", resp.text().unwrap_or_default());
+            bail!(
+                "worklog search returned {status}: {}",
+                resp.text().unwrap_or_default()
+            );
         }
         let logs: Vec<WorklogJson> = resp.json().context("parsing worklog search")?;
         Ok(logs
             .iter()
             .filter(|w| {
                 w.issue.as_ref().map(|i| i.id == issue_id).unwrap_or(false)
-                    && w.started.as_deref().map(|s| s.starts_with(&day)).unwrap_or(false)
+                    && w.started
+                        .as_deref()
+                        .map(|s| s.starts_with(&day))
+                        .unwrap_or(false)
             })
             .map(|w| w.started.as_deref().and_then(parse_started_time))
             .collect())
@@ -176,8 +197,18 @@ impl TempoClient {
     /// "started": "YYYY-MM-DD HH:MM:SS.000", "timeSpentSeconds": <n>, "comment": "<text>" }`.
     /// (The bean `TimesheetWorklogBean` does NOT accept `issueId`/`billable`/
     /// `locationId`/`timeSpent` — `originTaskId` and `timeSpentSeconds` are used.)
-    pub fn create_worklog(&self, issue_id: u64, seconds: u64, comment: &str, started: &str, _billable: bool) -> Result<u64> {
-        let url = format!("{}/rest/tempo-timesheets/{}/worklogs", self.base_url, self.version);
+    pub fn create_worklog(
+        &self,
+        issue_id: u64,
+        seconds: u64,
+        comment: &str,
+        started: &str,
+        _billable: bool,
+    ) -> Result<u64> {
+        let url = format!(
+            "{}/rest/tempo-timesheets/{}/worklogs",
+            self.base_url, self.version
+        );
         // The server expects a millisecond timestamp "YYYY-MM-DD HH:MM:SS.000".
         let started = if started.contains('.') {
             started.to_string()
@@ -191,7 +222,8 @@ impl TempoClient {
             "started": started,
             "worker": self.worker
         });
-        let resp = self.send_with_relogin(|| self.http.post(&url).json(&body))
+        let resp = self
+            .send_with_relogin(|| self.http.post(&url).json(&body))
             .context("creating worklog")?;
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
@@ -200,7 +232,11 @@ impl TempoClient {
         }
         // Best-effort: read the created worklog id from the response.
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(id) = v.get("tempoWorklogId").or_else(|| v.get("originId")).and_then(|x| x.as_u64()) {
+            if let Some(id) = v
+                .get("tempoWorklogId")
+                .or_else(|| v.get("originId"))
+                .and_then(|x| x.as_u64())
+            {
                 return Ok(id);
             }
         }
@@ -211,7 +247,8 @@ impl TempoClient {
     /// Fails on connection error or any other non-2xx.
     pub fn reachable(&self) -> Result<()> {
         let url = format!("{}/rest/api/2/myself", self.base_url);
-        let resp = self.send_with_relogin(|| self.http.get(&url))
+        let resp = self
+            .send_with_relogin(|| self.http.get(&url))
             .context("connecting to Jira")?;
         let status = resp.status();
         if !status.is_success() {
@@ -231,7 +268,14 @@ impl crate::pipeline::WorklogStore for TempoClient {
     fn worklog_started_times(&self, id: u64, date: NaiveDate) -> Result<Vec<Option<NaiveTime>>> {
         TempoClient::worklog_started_times(self, id, date)
     }
-    fn create_worklog(&self, id: u64, seconds: u64, comment: &str, started: &str, billable: bool) -> Result<u64> {
+    fn create_worklog(
+        &self,
+        id: u64,
+        seconds: u64,
+        comment: &str,
+        started: &str,
+        billable: bool,
+    ) -> Result<u64> {
         TempoClient::create_worklog(self, id, seconds, comment, started, billable)
     }
 }

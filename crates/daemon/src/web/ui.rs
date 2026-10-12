@@ -100,12 +100,13 @@ mod tests {
         let ctx = testutil::ctx_for(&d);
         let app = test::init_service(build_app(ctx)).await;
 
-        let req = actix_web::test::TestRequest::get().uri("/api/health").to_request();
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/health")
+            .to_request();
         let resp = actix_web::test::call_service(&app, req).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = serde_json::from_slice(
-            &actix_web::test::read_body(resp).await,
-        ).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&actix_web::test::read_body(resp).await).unwrap();
         assert_eq!(body, serde_json::json!({"ok": true}));
 
         let _ = std::fs::remove_dir_all(&d);

@@ -42,7 +42,11 @@ pub struct HolidaySet {
 
 impl HolidaySet {
     pub fn empty() -> Self {
-        Self { dates: HashSet::new(), names: std::collections::HashMap::new(), sources: vec![] }
+        Self {
+            dates: HashSet::new(),
+            names: std::collections::HashMap::new(),
+            sources: vec![],
+        }
     }
 
     pub fn is_holiday(&self, d: NaiveDate) -> Option<&str> {
@@ -61,11 +65,19 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
 }
 
 /// Validate and ingest one year file's JSON.
-fn ingest(text: &str, source: &str, expected_year: Option<i32>) -> Result<Vec<(NaiveDate, String)>, String> {
-    let yf: YearFile = serde_json::from_str(text).map_err(|e| format!("{}: JSON parse: {}", source, e))?;
+fn ingest(
+    text: &str,
+    source: &str,
+    expected_year: Option<i32>,
+) -> Result<Vec<(NaiveDate, String)>, String> {
+    let yf: YearFile =
+        serde_json::from_str(text).map_err(|e| format!("{}: JSON parse: {}", source, e))?;
     if let Some(exp) = expected_year {
         if yf.year != exp {
-            return Err(format!("{}: year field {} != file year {}", source, yf.year, exp));
+            return Err(format!(
+                "{}: year field {} != file year {}",
+                source, yf.year, exp
+            ));
         }
     }
     let mut out = Vec::new();
@@ -85,11 +97,19 @@ pub fn load_for_date(path: &Path) -> Result<HolidaySet, String> {
     let mut sources = Vec::new();
     if path.is_dir() {
         // Merge all holidays-*.json in the dir; membership is checked per-date.
-        for entry in std::fs::read_dir(path).map_err(|e| format!("reading dir {}: {}", path.display(), e))? {
+        for entry in
+            std::fs::read_dir(path).map_err(|e| format!("reading dir {}: {}", path.display(), e))?
+        {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().to_string();
-            let Some(y) = extract_year(&name) else { continue };
-            let entries = ingest(&std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?, &name, Some(y))?;
+            let Some(y) = extract_year(&name) else {
+                continue;
+            };
+            let entries = ingest(
+                &std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?,
+                &name,
+                Some(y),
+            )?;
             for (dd, nm) in entries {
                 if set.dates.insert(dd) {
                     set.names.insert(dd, nm);

@@ -40,9 +40,12 @@ fn send_toast(title: &str, body: &str) {
             .args([
                 "add",
                 r"HKCU\Software\Classes\AppUserModelId\DailyReport",
-                "/v", "DisplayName",
-                "/t", "REG_SZ",
-                "/d", "Daily Report",
+                "/v",
+                "DisplayName",
+                "/t",
+                "REG_SZ",
+                "/d",
+                "Daily Report",
                 "/f",
             ])
             .stdout(Stdio::null())

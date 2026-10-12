@@ -21,7 +21,11 @@ impl RepoWeight {
         // commit count + diff churn. Guard against zero (repo with an empty-diff
         // commit) so it still gets a minimal share.
         let w = self.commit_count + self.added + self.removed;
-        if w == 0 { 1 } else { w }
+        if w == 0 {
+            1
+        } else {
+            w
+        }
     }
 }
 
@@ -59,7 +63,11 @@ pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
             assigned += s;
             s
         };
-        alloc.push(Allocated { issue_key: r.issue_key.clone(), repo: r.repo.clone(), seconds: secs });
+        alloc.push(Allocated {
+            issue_key: r.issue_key.clone(),
+            repo: r.repo.clone(),
+            seconds: secs,
+        });
     }
     alloc
 }
@@ -98,7 +106,13 @@ mod tests {
     use super::*;
 
     fn one() -> Vec<RepoWeight> {
-        vec![RepoWeight { repo: "r1".into(), issue_key: "A-1".into(), commit_count: 3, added: 100, removed: 10 }]
+        vec![RepoWeight {
+            repo: "r1".into(),
+            issue_key: "A-1".into(),
+            commit_count: 3,
+            added: 100,
+            removed: 10,
+        }]
     }
 
     #[test]
@@ -111,8 +125,20 @@ mod tests {
     #[test]
     fn multi_repo_splits_and_sums_to_total() {
         let repos = vec![
-            RepoWeight { repo: "a".into(), issue_key: "A-1".into(), commit_count: 3, added: 100, removed: 10 }, // w=113
-            RepoWeight { repo: "b".into(), issue_key: "B-1".into(), commit_count: 1, added: 10, removed: 2 },   // w=13
+            RepoWeight {
+                repo: "a".into(),
+                issue_key: "A-1".into(),
+                commit_count: 3,
+                added: 100,
+                removed: 10,
+            }, // w=113
+            RepoWeight {
+                repo: "b".into(),
+                issue_key: "B-1".into(),
+                commit_count: 1,
+                added: 10,
+                removed: 2,
+            }, // w=13
         ];
         let a = allocate(28800, &repos);
         let sum: u64 = a.iter().map(|x| x.seconds).sum();
@@ -129,8 +155,20 @@ mod tests {
     #[test]
     fn zero_weight_repo_still_gets_share() {
         let repos = vec![
-            RepoWeight { repo: "a".into(), issue_key: "A-1".into(), commit_count: 0, added: 0, removed: 0 },
-            RepoWeight { repo: "b".into(), issue_key: "B-1".into(), commit_count: 2, added: 50, removed: 5 },
+            RepoWeight {
+                repo: "a".into(),
+                issue_key: "A-1".into(),
+                commit_count: 0,
+                added: 0,
+                removed: 0,
+            },
+            RepoWeight {
+                repo: "b".into(),
+                issue_key: "B-1".into(),
+                commit_count: 2,
+                added: 50,
+                removed: 5,
+            },
         ];
         let a = allocate(28800, &repos);
         let sum: u64 = a.iter().map(|x| x.seconds).sum();

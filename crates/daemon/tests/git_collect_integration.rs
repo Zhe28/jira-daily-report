@@ -15,7 +15,12 @@ fn git(cwd: &Path, args: &[&str]) {
         .current_dir(cwd)
         .output()
         .expect("run git");
-    assert!(out.status.success(), "git {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args[0],
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Build a commit date string at the *local* timezone offset, so the test is
@@ -36,12 +41,24 @@ fn commit(cwd: &Path, date: &str, msg: &str, file: &str, content: &str) {
         .current_dir(cwd)
         .output()
         .expect("run git commit");
-    assert!(out.status.success(), "git commit failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Commit with an explicit committer identity + date (used to simulate
 /// commits made by another person or on another branch).
-fn commit_as(cwd: &Path, date: &str, msg: &str, file: &str, content: &str, name: &str, email: &str) {
+fn commit_as(
+    cwd: &Path,
+    date: &str,
+    msg: &str,
+    file: &str,
+    content: &str,
+    name: &str,
+    email: &str,
+) {
     std::fs::write(cwd.join(file), content).unwrap();
     git(cwd, &["add", file]);
     let out = Command::new("git")
@@ -55,7 +72,11 @@ fn commit_as(cwd: &Path, date: &str, msg: &str, file: &str, content: &str, name:
         .current_dir(cwd)
         .output()
         .expect("run git commit");
-    assert!(out.status.success(), "git commit failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 fn tmp_repo(tag: &str) -> std::path::PathBuf {
@@ -81,17 +102,39 @@ fn collector_filters_by_day_and_window() {
     let dir = tmp_repo("day-window");
 
     // A: target day, in window (10:00)  -> included
-    commit(&dir, &local_date("2026-09-09", "10:00"), "commit A in window", "a.txt", "a");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "10:00"),
+        "commit A in window",
+        "a.txt",
+        "a",
+    );
     // B: target day, out of window (19:00) -> excluded
-    commit(&dir, &local_date("2026-09-09", "19:00"), "commit B out of window", "b.txt", "b");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "19:00"),
+        "commit B out of window",
+        "b.txt",
+        "b",
+    );
     // C: previous day, in window -> excluded (different day)
-    commit(&dir, &local_date("2026-09-08", "10:00"), "commit C previous day", "c.txt", "c");
+    commit(
+        &dir,
+        &local_date("2026-09-08", "10:00"),
+        "commit C previous day",
+        "c.txt",
+        "c",
+    );
 
     let (date, start, end) = window();
     let rc = git_collector::collect(&dir, date, start, end);
     assert!(rc.error.is_none(), "unexpected error: {:?}", rc.error);
     let subjects: Vec<&str> = rc.commits.iter().map(|c| c.subject.as_str()).collect();
-    assert_eq!(subjects, vec!["commit A in window"], "expected only commit A, got {subjects:?}");
+    assert_eq!(
+        subjects,
+        vec!["commit A in window"],
+        "expected only commit A, got {subjects:?}"
+    );
 
     // The kept commit should have a non-empty patch and counted lines.
     let a = &rc.commits[0];
@@ -108,17 +151,53 @@ fn collector_overtime_collects_until_end_of_day() {
     let end_of_day = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
 
     // P: previous day evening -> excluded (different day)
-    commit(&dir, &local_date("2026-09-08", "20:00"), "P previous day evening", "p.txt", "p");
+    commit(
+        &dir,
+        &local_date("2026-09-08", "20:00"),
+        "P previous day evening",
+        "p.txt",
+        "p",
+    );
     // M: just before work_end (17:59) -> excluded from overtime
-    commit(&dir, &local_date("2026-09-09", "17:59"), "M before 18:00", "m.txt", "m");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "17:59"),
+        "M before 18:00",
+        "m.txt",
+        "m",
+    );
     // X: exactly at work_end (18:00:00) -> included
-    commit(&dir, &local_date("2026-09-09", "18:00"), "X at 18:00", "x.txt", "x");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "18:00"),
+        "X at 18:00",
+        "x.txt",
+        "x",
+    );
     // B: 19:00 -> included
-    commit(&dir, &local_date("2026-09-09", "19:00"), "B at 19:00", "b.txt", "b");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "19:00"),
+        "B at 19:00",
+        "b.txt",
+        "b",
+    );
     // N: next morning (2026-09-10 00:30) -> excluded (different day)
-    commit(&dir, &local_date("2026-09-10", "00:30"), "N next morning", "n.txt", "n");
+    commit(
+        &dir,
+        &local_date("2026-09-10", "00:30"),
+        "N next morning",
+        "n.txt",
+        "n",
+    );
     // L: late night 23:59 -> included
-    commit(&dir, &local_date("2026-09-09", "23:59"), "L at 23:59", "l.txt", "l");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "23:59"),
+        "L at 23:59",
+        "l.txt",
+        "l",
+    );
 
     let rc = git_collector::collect_for_overtime(&dir, "me@corp.com", date, end_of_day);
     assert!(rc.error.is_none(), "unexpected error: {:?}", rc.error);
@@ -140,9 +219,16 @@ fn collector_overtime_collects_until_end_of_day() {
     // stay out of it (the two windows are disjoint).
     let (d, start, end) = window();
     let rc_normal = git_collector::collect_for(&dir, "me@corp.com", d, start, end);
-    let normal_subjects: Vec<&str> = rc_normal.commits.iter().map(|c| c.subject.as_str()).collect();
-    assert_eq!(normal_subjects, vec!["M before 18:00"],
-        "normal pass should contain only the 17:59 commit, got {normal_subjects:?}");
+    let normal_subjects: Vec<&str> = rc_normal
+        .commits
+        .iter()
+        .map(|c| c.subject.as_str())
+        .collect();
+    assert_eq!(
+        normal_subjects,
+        vec!["M before 18:00"],
+        "normal pass should contain only the 17:59 commit, got {normal_subjects:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -163,11 +249,23 @@ fn finds_commits_on_branches_not_checked_out() {
     let dir = tmp_repo("nonhead");
 
     // Baseline commit on the default branch, outside the target day.
-    commit(&dir, &local_date("2026-09-07", "10:00"), "baseline", "base.txt", "base");
+    commit(
+        &dir,
+        &local_date("2026-09-07", "10:00"),
+        "baseline",
+        "base.txt",
+        "base",
+    );
 
     // Work happens on a feature branch, inside the window.
     git(&dir, &["checkout", "-qb", "feature"]);
-    commit(&dir, &local_date("2026-09-09", "10:00"), "feature work in window", "feat.txt", "feat");
+    commit(
+        &dir,
+        &local_date("2026-09-09", "10:00"),
+        "feature work in window",
+        "feat.txt",
+        "feat",
+    );
     // ...and a colleague committed on the same branch that day (must be excluded).
     commit_as(
         &dir,
@@ -200,7 +298,13 @@ fn explicit_email_overrides_git_config() {
     // A repo whose git config says one identity; collect_for with a different
     // explicit email must pick up only commits made by that email.
     let dir = tmp_repo("explicit");
-    commit(&dir, &local_date("2026-09-07", "10:00"), "baseline", "base.txt", "base");
+    commit(
+        &dir,
+        &local_date("2026-09-07", "10:00"),
+        "baseline",
+        "base.txt",
+        "base",
+    );
     commit_as(
         &dir,
         &local_date("2026-09-09", "10:00"),
@@ -233,15 +337,24 @@ fn git_identity_prefers_repo_local_then_global() {
     std::fs::create_dir_all(&local).unwrap();
     std::env::set_var("GIT_CONFIG_GLOBAL", local.join("config"));
     std::env::set_var("GIT_CONFIG_SYSTEM", local.join("no-such-system"));
-    git(&dir, &["config", "--global", "user.email", "global@corp.com"]);
+    git(
+        &dir,
+        &["config", "--global", "user.email", "global@corp.com"],
+    );
     // The repo-local value must win over the global one.
-    assert_eq!(git_collector::git_identity(&dir).as_deref(), Some("local@corp.com"));
+    assert_eq!(
+        git_collector::git_identity(&dir).as_deref(),
+        Some("local@corp.com")
+    );
 
     // In a dir without a repo-local value, the global one is used.
     let other = std::env::temp_dir().join(format!("gitcol-identity-other-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&other);
     std::fs::create_dir_all(&other).unwrap();
-    assert_eq!(git_collector::git_identity(&other).as_deref(), Some("global@corp.com"));
+    assert_eq!(
+        git_collector::git_identity(&other).as_deref(),
+        Some("global@corp.com")
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&other);

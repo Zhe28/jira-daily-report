@@ -6,16 +6,16 @@
 //! for any repo whose issue has no worklog for the target day yet.
 
 pub mod config;
-pub mod hotconfig;
-pub mod holidays;
 pub mod git_collector;
-pub mod reporter;
-pub mod worklog_plan;
+pub mod holidays;
+pub mod hotconfig;
 pub mod logfile;
-pub mod tempo;
-pub mod state;
 pub mod notify;
 pub mod pipeline;
+pub mod reporter;
 pub mod scheduler;
+pub mod state;
+pub mod tempo;
 pub mod tray;
 pub mod web;
+pub mod worklog_plan;

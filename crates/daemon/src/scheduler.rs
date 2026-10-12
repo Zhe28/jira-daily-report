@@ -69,7 +69,14 @@ pub fn run_resident(
     // Startup catch-up: if we've already passed today's check time, run yesterday now.
     if now.naive_local() >= today_at {
         tracing::info!("启动时已过今日 {}，补跑昨日 {}", check, yesterday());
-        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false, &*on_done);
+        run_for(
+            hot.clone(),
+            yesterday(),
+            ai.clone(),
+            store.clone(),
+            false,
+            &*on_done,
+        );
     } else {
         tracing::info!("启动时未到今日 {}，等待到点", check);
     }
@@ -78,7 +85,9 @@ pub fn run_resident(
         // 每轮从共享配置读取最新 check_time（PUT /api/config 热生效）。
         let check = hot.get().check_time();
         let next = next_trigger(check);
-        let delay = (next - Local::now()).to_std().unwrap_or_else(|_| Duration::from_secs(3600));
+        let delay = (next - Local::now())
+            .to_std()
+            .unwrap_or_else(|_| Duration::from_secs(3600));
         // The day the pipeline will fill once the trigger fires (it uses `yesterday()`
         // at trigger time).
         let target = next.date_naive() - chrono::Duration::days(1);
@@ -93,6 +102,13 @@ pub fn run_resident(
         );
         std::thread::sleep(delay);
 
-        run_for(hot.clone(), yesterday(), ai.clone(), store.clone(), false, &*on_done);
+        run_for(
+            hot.clone(),
+            yesterday(),
+            ai.clone(),
+            store.clone(),
+            false,
+            &*on_done,
+        );
     }
 }

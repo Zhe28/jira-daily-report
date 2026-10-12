@@ -217,6 +217,10 @@ fn main() -> Result<()> {
             } else {
                 let hot = Arc::new(daily_report::hotconfig::HotConfig::new(cfg.clone()));
                 let last = Arc::new(std::sync::Mutex::new(daily_report::web::LastRun::default()));
+                // 客户端槽位：web 层 PUT /api/config 与 scheduler 线程共享，
+                // 配置热切换后调度线程下一轮即读到新客户端（RUST-004）。
+                let ai_slot = Arc::new(std::sync::RwLock::new(ai.clone()));
+                let store_slot = Arc::new(std::sync::RwLock::new(store.clone()));
                 let last2 = last.clone();
                 let on_done: Box<
                     dyn Fn(daily_report::pipeline::DayOutcome, Option<String>) + Send + Sync,
@@ -241,8 +245,8 @@ fn main() -> Result<()> {
                         hot: hot.clone(),
                         config_path: cli.config.clone(),
                         last: last.clone(),
-                        ai: Arc::new(std::sync::RwLock::new(ai.clone())),
-                        store: Arc::new(std::sync::RwLock::new(store.clone())),
+                        ai: ai_slot.clone(),
+                        store: store_slot.clone(),
                     }));
 
                     // actix-web 服务在独立 tokio 线程运行
@@ -289,9 +293,10 @@ fn main() -> Result<()> {
                     tracing::info!("--no-gui：跳过 Web 与托盘");
                 }
 
-                // scheduler 在独立 std 线程（内部 thread::sleep 循环）
+                // scheduler 在独立 std 线程（内部 thread::sleep 循环）；
+                // 通过槽位读取客户端，PUT /api/config 热切换后下一轮生效。
                 std::thread::spawn(move || {
-                    scheduler::run_resident(hot, ai, store, on_done);
+                    scheduler::run_resident(hot, (ai_slot, store_slot), on_done);
                 });
                 // 主线程保持存活（托盘"退出"走 process::exit；Ctrl+C 直接杀进程）
                 std::thread::park();

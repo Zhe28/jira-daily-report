@@ -2,8 +2,9 @@
 ### autoGenDailyReport 接口测试（Jira Data Center + Tempo Timesheets v4）
 ###
 ### 用法（VS Code REST Client / IDEA HTTP Client 均可）：
-###   1. 把下面 @pass 改成你的 Jira 密码（代码里走环境变量 DAILYREPORT_JIRA_PASS，
-###      http 文件里只能写死，测完别外传）
+###   1. 把下面 @pass / @basicAuth / @aiKey 改成你自己的凭据
+###      （代码里走环境变量 DAILYREPORT_JIRA_PASS，http 文件里只能写死，
+###       测完别外传；本文件已提交到 git，切勿填入真实凭据）
 ###   2. 逐段右键 "Send Request" 即可
 ###   3. 日期用 {{date}}，默认 2026-09-10（昨天），可按需改
 ###
@@ -14,13 +15,13 @@
 ###   - 创建工时是真实写数据！正式执行前先用搜索接口确认当天没写过
 ### =====================================================================
 
-@baseUrl = http://114.215.252.122:8080
-@user = zhangsan
-@pass = 666666
+@baseUrl = http://jira.example.com:8080
+@user = <你的Jira用户名>
+@pass = <你的Jira密码>
 # Basic 头必须是 Base64(用户名:密码)，客户端不会自动编码；
-# 改密码后重算：[convert]::ToBase64String([text.encoding]::UTF8.GetBytes("zhangsan:666666"))
-@basicAuth = aHVhbmd6ZTo2NjY2NjY=
-@worker = JIRAUSER25336
+# 改密码后重算：[convert]::ToBase64String([text.encoding]::UTF8.GetBytes("<用户名>:<密码>"))
+@basicAuth = <Base64(用户名:密码)>
+@worker = <你的worker id，形如 JIRAUSER12345>
 @tempoVersion = 4
 
 # 要测试的日期（yyyy-MM-dd，只到日期，不要带时分/时区，否则 500）
@@ -32,20 +33,21 @@
 # @issueId = 157007
 
 ### 0.  登录验证
-POST http://114.215.252.122:8080/login.jsp HTTP/1.1
+### 本段是手工抓包模板：用浏览器登录 Jira 后，从 DevTools → Network 复制
+### 登录请求的完整请求头（含真实会话 cookie，属会话凭据，禁止提交到 git）。
+POST {{baseUrl}}/login.jsp HTTP/1.1
 Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
 Accept-Encoding: gzip, deflate
 Accept-Language: zh,en;q=0.9,zh-CN;q=0.8
 Cache-Control: no-cache
 Content-Length: 116
 Content-Type: application/x-www-form-urlencoded
-Cookie: JIRASESSIONID=13AFD41FA3C8ACB1E926177450A9E5E5; atlassian.xsrf.token=BS0B-68XT-LA1N-QO1H_311edec518f4162568833eb2fd5df71f3458b7a7_lout
 DNT: 1
-Host: 114.215.252.122:8080
-Origin: http://114.215.252.122:8080
+Host: {{baseUrl}}
+Origin: {{baseUrl}}
 Pragma: no-cache
 Proxy-Connection: keep-alive
-Referer: http://114.215.252.122:8080/login.jsp
+Referer: {{baseUrl}}/login.jsp
 Upgrade-Insecure-Requests: 1
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0
 
@@ -131,8 +133,8 @@ client.test("create 2xx", function () {
 ### 附：AI 接口（OpenAI 兼容 /chat/completions，等价 reporter.rs 的调用）
 ### =====================================================================
 
-@aiBaseUrl = http://192.168.3.7:8002/v1
-@aiKey = ebiz
+@aiBaseUrl = http://<AI网关IP>:8002/v1
+@aiKey = <你的AI key>
 @aiModel = Qwen3.8-27B-FP8
 
 POST {{aiBaseUrl}}/chat/completions

@@ -181,41 +181,46 @@ pub fn process_day(
     }
     let normal_allocs = worklog_plan::allocate(cfg.total_daily_seconds, &weights);
 
-    // 2) Overtime pass (when enabled): one global duration from the latest
-    //    overtime commit, split across overtime repos by the same weighting.
+    // 2) Overtime pass (when enabled): each overtime repo computes its own
+    //    duration from its own latest overtime commit (per-repo, independent).
+    //    One worklog per repo; no cross-repo global max / weighting.
+    let mut ot_allocs: Vec<worklog_plan::Allocated> = Vec::new();
     let mut ot_reports: BTreeMap<String, Result<String, String>> = BTreeMap::new();
-    let ot_total = if cfg.overtime {
-        let last = repo_days
+    let mut ot_total_secs: u64 = 0;
+    if cfg.overtime {
+        for rd in repo_days
             .iter()
             .filter(|rd| rd.overtime_commits.has_commits())
-            .flat_map(|rd| rd.overtime_commits.commits.iter())
-            .filter_map(|c| parse_local_time(&c.committer_date))
-            .max();
-        match last {
-            Some(last) => {
-                let ot_weights: Vec<RepoWeight> = repo_days
-                    .iter()
-                    .filter(|rd| rd.overtime_commits.has_commits())
-                    .map(|rd| weight_of(&rd.overtime_commits, &rd.repo, &rd.issue_key))
-                    .collect();
-                let ot_total = worklog_plan::overtime_total_seconds(last, cfg.work_end_time());
-                for rd in repo_days
-                    .iter()
-                    .filter(|rd| rd.overtime_commits.has_commits())
-                {
-                    ot_reports.insert(
-                        rd.issue_key.clone(),
-                        generate_report(ai, rd, &rd.overtime_commits, true),
+        {
+            let last = rd
+                .overtime_commits
+                .commits
+                .iter()
+                .filter_map(|c| parse_local_time(&c.committer_date))
+                .max()
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "repo {} 加班提交时间全部无法解析,按 work_end 计 1h 下限",
+                        rd.repo
                     );
-                }
-                outcome.overtime_seconds = Some(ot_total);
-                Some((ot_total, worklog_plan::allocate(ot_total, &ot_weights)))
-            }
-            None => None,
+                    cfg.work_end_time()
+                });
+            let secs = worklog_plan::overtime_total_seconds(last, cfg.work_end_time());
+            ot_total_secs += secs;
+            ot_allocs.push(worklog_plan::Allocated {
+                issue_key: rd.issue_key.clone(),
+                repo: rd.repo.clone(),
+                seconds: secs,
+            });
+            ot_reports.insert(
+                rd.issue_key.clone(),
+                generate_report(ai, rd, &rd.overtime_commits, true),
+            );
         }
-    } else {
-        None
-    };
+        if ot_total_secs > 0 {
+            outcome.overtime_seconds = Some(ot_total_secs);
+        }
+    }
 
     // 3) Readiness check (<=5s) — notify on failure, continue (best effort).
     if let Err(e) = store.reachable() {
@@ -236,23 +241,21 @@ pub fn process_day(
             false,
         ));
     }
-    if let Some((_, ot_allocs)) = &ot_total {
-        for a in ot_allocs {
-            sections.push(section_from(
-                &a.issue_key,
-                &a.repo,
-                a.seconds,
-                ot_reports.get(&a.issue_key),
-                true,
-            ));
-        }
+    for a in &ot_allocs {
+        sections.push(section_from(
+            &a.issue_key,
+            &a.repo,
+            a.seconds,
+            ot_reports.get(&a.issue_key),
+            true,
+        ));
     }
     let normal_total = if normal_allocs.is_empty() {
         0
     } else {
         cfg.total_daily_seconds
     };
-    let log_total = normal_total + ot_total.as_ref().map(|(t, _)| *t).unwrap_or(0);
+    let log_total = normal_total + ot_total_secs;
     let log_file = logfile::write_log(&cfg.log_dir, date, log_total, &sections)?;
     outcome.log_file = Some(log_file.clone());
 
@@ -281,11 +284,9 @@ pub fn process_day(
             ));
         }
     }
-    if let Some((_, ot_allocs)) = &ot_total {
-        for a in ot_allocs {
-            if let Some(r) = ot_reports.get(&a.issue_key) {
-                jobs.push((a.issue_key.clone(), a.clone(), r, started_ot.clone(), true));
-            }
+    for a in &ot_allocs {
+        if let Some(r) = ot_reports.get(&a.issue_key) {
+            jobs.push((a.issue_key.clone(), a.clone(), r, started_ot.clone(), true));
         }
     }
 
@@ -916,10 +917,12 @@ mod tests {
     }
 
     #[test]
-    fn multi_repo_overtime_split_sums_to_total() {
+    fn multi_repo_overtime_computed_per_repo() {
         let dir = tmp();
         let c = cfg(&dir);
-        // Two repos with overtime commits; latest 20:35 -> 3h total.
+        // Two repos with overtime commits. Per-repo: A-1 latest 20:35 -> 10800,
+        // B-1 latest 19:00 -> 3600 (exactly 1h over work_end, at the 1h floor).
+        // No cross-repo global max / weighting.
         let rd_b = {
             let mut rd = rd_overtime("b-night", "19:00");
             rd.issue_key = "B-1".into();
@@ -937,9 +940,14 @@ mod tests {
         );
         let o = process_day(&c, DATE, &rd, &ai, &store, false).unwrap();
         assert_eq!(o.created.len(), 2);
+        // Order follows repo_days: A-1 first, B-1 second.
+        assert_eq!(o.created[0].0, "A-1");
+        assert_eq!(o.created[0].1, 10800);
+        assert_eq!(o.created[1].0, "B-1");
+        assert_eq!(o.created[1].1, 3600);
         let sum: u64 = o.created.iter().map(|x| x.1).sum();
-        assert_eq!(sum, 10800);
-        assert_eq!(o.overtime_seconds, Some(10800));
+        assert_eq!(sum, 14400);
+        assert_eq!(o.overtime_seconds, Some(14400));
         // Both stamped at work_end.
         for s in store.started.lock().unwrap().iter() {
             assert_eq!(s.as_str(), "2026-09-09 18:00:00");

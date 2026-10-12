@@ -72,10 +72,12 @@ pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
     alloc
 }
 
-/// Overtime duration for a day, in seconds: `last_commit - work_end`,
+/// Overtime duration (per repo), in seconds: `last_commit - work_end`,
 /// rounded UP to the nearest 30 minutes, with a floor of 1 hour and no cap.
-/// `last_commit` is the latest overtime commit time on the same day
-/// (always `>= work_end` by construction of the collection window).
+/// `last_commit` is the latest overtime commit time for one repo on the
+/// target day (always `>= work_end` by construction of the collection window).
+/// The pipeline calls this once per overtime repo, so each repo's overtime is
+/// independent (no cross-repo global max / weighting).
 ///
 /// Examples (work_end = 18:00): 18:00/18:08/18:29/18:30/18:50 -> 3600;
 /// 19:10 -> 5400; 19:55 -> 7200; 20:35 -> 10800; 23:59 -> 21600.

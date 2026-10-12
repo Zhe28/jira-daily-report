@@ -50,12 +50,17 @@ pub fn spawn(url: &str) -> anyhow::Result<()> {
     let open_id: MenuId = open_item.id().clone();
     let quit_id: MenuId = quit_item.id().clone();
 
-    let _tray: TrayIcon = TrayIconBuilder::new()
+    let tray: TrayIcon = TrayIconBuilder::new()
         .with_tooltip("daily-report")
         .with_icon(icon)
         .with_menu(Box::new(menu))
         .build()
         .map_err(|e| anyhow::anyhow!("tray: {e}"))?;
+    // 图标必须存活到进程退出:tray-icon 0.19 的 Windows 端 `Drop for TrayIcon`
+    // 会 remove_tray_icon + DestroyWindow,若让它在 spawn 返回时被 drop,
+    // 图标会瞬间消失、菜单线程永远收不到事件。进程内常驻,forget 之,
+    // 由操作系统在进程退出时回收底层 HWND/句柄。
+    std::mem::forget(tray);
 
     let url = url.to_string();
     std::thread::spawn(move || {

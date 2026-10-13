@@ -1,9 +1,8 @@
 //! autoGenDailyReport
 //!
-//! Resident tool that watches local git repos, generates a Chinese daily report
-//! from yesterday's (09:00–18:00) commits via an OpenAI-compatible AI endpoint,
-//! saves a merged `.log` to a local folder, and auto-fills a Jira Tempo worklog
-//! for any repo whose issue has no worklog for the target day yet.
+//! 常驻工具:监视本地 git 仓库,通过 OpenAI 兼容的 AI 端点基于昨日(09:00–18:00)
+//! 提交生成中文日报,把合并后的 `.log` 保存到本地文件夹,并为目标日尚无工时记录的
+//! 仓库自动补填 Jira Tempo 工时。
 
 pub mod config;
 pub mod git_collector;

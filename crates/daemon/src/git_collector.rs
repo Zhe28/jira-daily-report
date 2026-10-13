@@ -1,23 +1,23 @@
-//! Fetch a repo's commits whose committer time falls on `date` within the
-//! [work_start, work_end) window, with full patch text and added/removed lines.
+//! 获取仓库中提交者时间落在 `date` 且处于 [work_start, work_end) 窗口内的提交,
+//! 附完整 patch 文本及增删行数。
 
 use std::path::Path;
 use std::process::Command;
 
 use chrono::{Local, NaiveDate, NaiveTime};
 
-/// One commit.
+/// 一条提交。
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub sha: String,
-    pub committer_date: String, // RFC3339, local
+    pub committer_date: String, // RFC3339,本地时区
     pub subject: String,
     pub patch: String,
     pub added: u64,
     pub removed: u64,
 }
 
-/// All commits for one repo in the target window.
+/// 目标窗口内某仓库的全部提交。
 #[derive(Debug, Clone)]
 pub struct RepoCommits {
     pub repo: String,
@@ -53,13 +53,10 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The committer email to filter by when collecting commits: the repo-local
-/// `user.email` if set, otherwise the global `user.email`.
+/// 收集提交时用于过滤的提交者邮箱:若设置了仓库级 `user.email` 则用它,否则用全局 `user.email`。
 ///
-/// The global lookup is run with `--global` (not from inside the repo) so it
-/// cannot pick up the repo-local value and so it works even when `cwd` is not
-/// inside a work tree (config validation checks repos that may not be git
-/// yet).
+/// 全局查询使用 `--global`(不在仓库内执行),以避免取到仓库级值,并且在 `cwd`
+/// 不在工作树内时也能正常工作(配置校验会检查可能还不是 git 仓库的目录)。
 pub fn git_identity(cwd: &Path) -> Option<String> {
     for args in [
         &["config", "user.email"] as &[&str],
@@ -75,18 +72,17 @@ pub fn git_identity(cwd: &Path) -> Option<String> {
     None
 }
 
-/// Inclusive start / exclusive end window test. Handles a window that wraps
-/// past midnight (e.g. 19:00–08:00) correctly.
+/// 窗口判定:起点含、终点不含。正确处理跨午夜窗口(如 19:00–08:00)。
 pub fn in_window(t: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
     if start <= end {
         t >= start && t < end
     } else {
-        // wraps: [start, 24:00) U [00:00, end)
+        // 跨午夜:[start, 24:00) ∪ [00:00, end)
         t >= start || t < end
     }
 }
 
-/// Count content +/- lines from a unified diff, skipping +++/--- file headers.
+/// 从 unified diff 中统计内容行的 +/- 行,跳过 +++/--- 文件头。
 pub fn count_diff(patch: &str) -> (u64, u64) {
     let mut added = 0u64;
     let mut removed = 0u64;
@@ -103,8 +99,8 @@ pub fn count_diff(patch: &str) -> (u64, u64) {
     (added, removed)
 }
 
-/// Parse `sha<TAB>date<TAB>committer-email<TAB>subject` lines from
-/// `git log --format=%H%x09%cI%x09%ce%x09%s`.
+/// 解析 `git log --format=%H%x09%cI%x09%ce%x09%s` 输出的
+/// `sha<TAB>日期<TAB>提交者邮箱<TAB>标题` 行。
 fn parse_log(lines: &[&str]) -> Vec<(String, String, String, String)> {
     lines
         .iter()
@@ -123,13 +119,11 @@ fn parse_log(lines: &[&str]) -> Vec<(String, String, String, String)> {
         .collect()
 }
 
-/// Collect commits authored/committed by `email` in `repo_path` on `date`
-/// within `[start, end)`.
+/// 收集 `repo_path` 仓库中由 `email` 提交、日期为 `date` 且位于 `[start, end)` 内的提交。
 ///
-/// Uses `git log --all` (every ref: all local branches, remote-tracking
-/// branches, tags) instead of `HEAD`, so commits made on a branch that is not
-/// currently checked out are still found. The committer email then excludes
-/// commits made by other people on shared/remote branches.
+/// 使用 `git log --all`(所有引用:全部本地分支、远程跟踪分支、标签)而非 `HEAD`,
+/// 以便尚未检出的分支上的提交也能被找到。随后按提交者邮箱过滤,排除共享/远程
+/// 分支上他人所作的提交。
 pub fn collect_for(
     repo_path: &Path,
     email: &str,
@@ -140,9 +134,8 @@ pub fn collect_for(
     collect_for_range(repo_path, email, date, start, Some(end))
 }
 
-/// Collect this user's commits on `date` from `start` until the end of that
-/// calendar day (overtime pass; `NaiveTime` cannot express 24:00, hence the
-/// dedicated entry point).
+/// 收集本用户在 `date` 当天从 `start` 至日终的提交(加班段;`NaiveTime` 无法表示
+/// 24:00,故设独立入口)。
 pub fn collect_for_overtime(
     repo_path: &Path,
     email: &str,
@@ -152,8 +145,8 @@ pub fn collect_for_overtime(
     collect_for_range(repo_path, email, date, start, None)
 }
 
-/// Core collection. `end = None` keeps every commit on `date` with
-/// `time >= start` (i.e. through the end of the day).
+/// 核心收集逻辑。`end = None` 时保留 `date` 当天所有 `time >= start` 的提交
+/// (即到日终为止)。
 fn collect_for_range(
     repo_path: &Path,
     email: &str,
@@ -163,7 +156,7 @@ fn collect_for_range(
 ) -> RepoCommits {
     let label = repo_path.display().to_string();
 
-    // Confirm it's a git work tree.
+    // 确认是 git 工作树。
     if run_git(repo_path, &["rev-parse", "--is-inside-work-tree"]).is_err() {
         return RepoCommits {
             repo: label,
@@ -172,13 +165,11 @@ fn collect_for_range(
         };
     }
 
-    // Fetch a superset: everything committed since (date - 1 day) across all
-    // refs. Using a slightly wide --since (no --until) avoids a git gotcha
-    // where a date-based --until prunes in-range commits when the newest
-    // commit in graph order has an older date than its ancestors. The exact
-    // day + window + author selection is done in code below, so the superset
-    // is safe.
-    let offset = Local::now().offset().to_string(); // e.g. "+08:00"
+    // 抓取超集:自(date - 1 天)起、所有引用上的全部提交。采用略宽的 --since
+    // (不加 --until)可规避一个 git 坑:当图序中最新提交的日期比其祖先更旧时,
+    // 基于日期的 --until 会剪掉窗口内提交。精确的日期 + 窗口 + 作者筛选在下面
+    // 代码中完成,因此取超集是安全的。
+    let offset = Local::now().offset().to_string(); // 例如 "+08:00"
     let since_date = (date - chrono::Duration::days(1)).format("%Y-%m-%d");
     let since = format!("{since_date}T00:00:00{offset}");
     let format = "%H%x09%cI%x09%ce%x09%s";
@@ -204,17 +195,17 @@ fn collect_for_range(
 
     let mut commits = Vec::new();
     for (sha, cdate, committer_email, subject) in parse_log(&raw.lines().collect::<Vec<_>>()) {
-        // Keep only this user's commits...
+        // 只保留本用户的提交…
         if committer_email != email {
             continue;
         }
-        // ...on the target local calendar day...
+        // …且属于目标本地日历日…
         let dt = match chrono::DateTime::parse_from_rfc3339(&cdate) {
             Ok(dt) => dt,
             Err(_) => continue,
         };
         let local = dt.with_timezone(&Local);
-        // ...inside the window (or, when end is None, from start to end of day).
+        // …且在窗口内(end 为 None 时,即从 start 到日终)。
         let in_range = match end {
             Some(e) => in_window(local.time(), start, e),
             None => local.time() >= start,
@@ -223,7 +214,7 @@ fn collect_for_range(
             continue;
         }
 
-        // Fetch the full patch for this commit.
+        // 获取该提交的完整 patch。
         let patch = run_git(
             repo_path,
             &["show", "--no-color", "--format=", "--patch", &sha],
@@ -247,8 +238,8 @@ fn collect_for_range(
     }
 }
 
-/// Collect commits by whoever this machine identifies as (repo-local, then
-/// global `git config user.email`) for `date` within `[start, end)`.
+/// 收集本机所识别身份的人(先仓库级,后全局 `git config user.email`)在 `date`
+/// 当天 `[start, end)` 内的提交。
 pub fn collect(repo_path: &Path, date: NaiveDate, start: NaiveTime, end: NaiveTime) -> RepoCommits {
     match git_identity(repo_path) {
         Some(email) => collect_for(repo_path, &email, date, start, end),

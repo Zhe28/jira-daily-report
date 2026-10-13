@@ -1,8 +1,8 @@
-//! Persistent state (JSON) so the tool can:
-//! - remember which days it already processed (avoid re-filling on restart),
-//! - keep a record of the report drafts it generated.
+//! 持久化状态(JSON),使工具能够:
+//! - 记住哪些日子已经处理过(重启后避免重复补填),
+//! - 保存其生成的报告草稿记录。
 //!
-//! Stored at `<log_dir>/state.json`.
+//! 存放于 `<log_dir>/state.json`。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DayRecord {
     pub processed_at: String,
-    /// issue_key -> worklog seconds that were (or were planned to be) written.
+    /// issue_key → 已写(或计划写入)的工时秒数。
     pub worklogs: BTreeMap<String, u64>,
-    /// issue_key -> report text draft.
+    /// issue_key → 报告文本草稿。
     pub reports: BTreeMap<String, String>,
     /// 整日跳过（节假日/无提交）的原因；None 表示正常处理。
     #[serde(default)]
@@ -49,13 +49,13 @@ impl State {
         Ok(())
     }
 
-    /// Has this date already been processed (and written)?
+    /// 该日期是否已处理(并已写入)?
     pub fn is_processed(&self, date: NaiveDate) -> bool {
         let k = date.format("%Y-%m-%d").to_string();
         self.days.contains_key(&k)
     }
 
-    /// Mark a date processed, recording the worklogs + report drafts.
+    /// 标记某日期已处理,记录工时 + 报告草稿。
     pub fn mark_processed(
         &mut self,
         date: NaiveDate,
@@ -75,7 +75,7 @@ impl State {
         );
     }
 
-    /// Record a date as skipped (holiday / no commits). No worklogs written.
+    /// 将某日期标记为已跳过(节假日/无提交)。不写任何工时。
     pub fn mark_skipped(&mut self, date: NaiveDate, reason: String) {
         let k = date.format("%Y-%m-%d").to_string();
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();

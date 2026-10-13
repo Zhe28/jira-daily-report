@@ -1,10 +1,10 @@
-//! daily-report CLI entry point.
+//! daily-report CLI 入口。
 //!
-//! Subcommands:
-//!   run            resident: startup catch-up + daily loop at the configured time
-//!   run --date D   single-day mode (optionally --dry-run)
-//!   check          one-shot readiness check (Jira reachable + which issues are written)
-//!   fill --date D  manually run the pipeline for one date (still dedups via live check)
+//! 子命令:
+//!   run            常驻运行:启动时补跑 + 按配置时间每日循环
+//!   run --date D   单日模式(可选 --dry-run)
+//!   check          一次性就绪检查(Jira 是否可达 + 哪些 issue 已写入)
+//!   fill --date D  手动为某一天运行流水线(仍会实时查重去重)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -183,7 +183,7 @@ impl<'a> std::io::Write for MultiWriteAdapter<'a> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // generate-config does not need an existing config file.
+    // generate-config 不需要已有的配置文件。
     if let Cmd::GenerateConfig { output } = &cli.cmd {
         return cmd_generate_config(output.as_deref());
     }
@@ -192,8 +192,8 @@ fn main() -> Result<()> {
     let resident = matches!(cli.cmd, Cmd::Run { date: None, .. });
     // 常驻模式：日志双写到 log_dir（任何 tracing 调用之前初始化）。
     init_logging(resident, &cfg.log_dir);
-    // Startup check: every repo must have a resolvable committer identity
-    // (config git_email → repo-local/global git config user.email).
+    // 启动检查:每个仓库都必须能确定提交者身份(配置 git_email → 仓库级/全局
+    // git config user.email)。
     cfg.check_git_identity()?;
     for r in &cfg.repos {
         tracing::info!(
@@ -312,8 +312,7 @@ fn main() -> Result<()> {
     }
 }
 
-/// One-shot readiness check: Jira reachable + which issues already have a
-/// worklog for yesterday.
+/// 一次性就绪检查:Jira 是否可达 + 哪些 issue 已有昨天的工时记录。
 fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
     let yday = scheduler::yesterday();
     println!("\n== 就绪检查（目标日: {}）==", yday);
@@ -330,9 +329,8 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
         match store.issue_id(&r.issue_key) {
             Ok(id) => match store.worklog_started_times(id, yday) {
                 Ok(times) => {
-                    // Bucket by work_end: day entries (started < work_end) vs
-                    // evening/overtime entries (started >= work_end). A
-                    // `None` entry (unparseable started) blocks both buckets.
+                    // 按 work_end 分桶:白天条目(started < work_end)与晚间/加班
+                    // 条目(started >= work_end)。None 条目(started 无法解析)同时阻塞两个桶。
                     let we = cfg.work_end_time();
                     let day = times
                         .iter()
@@ -366,8 +364,7 @@ fn cmd_check(cfg: &Config, store: &dyn WorklogStore) -> Result<()> {
     Ok(())
 }
 
-/// Generate a config.toml template. Default: write to `./config.toml` in the
-/// current directory. With `-o`, write to the specified path.
+/// 生成 config.toml 模板。默认写入当前目录的 ./config.toml;使用 -o 则写入指定路径。
 fn cmd_generate_config(output: Option<&std::path::Path>) -> Result<()> {
     let target = match output {
         Some(p) => p.to_path_buf(),

@@ -1,4 +1,4 @@
-//! Configuration: parse `config.toml`, validate, read the Jira password from env.
+//! 配置:解析 `config.toml`、校验,并从环境变量读取 Jira 密码。
 
 use std::path::PathBuf;
 
@@ -7,15 +7,15 @@ use chrono::NaiveTime;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
-/// Environment variable holding the Jira password (kept out of the config file).
+/// 保存 Jira 密码的环境变量(不写入配置文件)。
 pub const JIRA_PASS_ENV: &str = "DAILYREPORT_JIRA_PASS";
 
-/// A check time that can be a single time or a range (for random scheduling).
+/// 检查时间:可以是固定时间,也可以是区间(用于随机调度)。
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckTime {
-    /// Fixed time every day.
+    /// 每天固定时间。
     Single(NaiveTime),
-    /// Random time within [start, end) each day.
+    /// 每天在 [start, end) 内随机选取一个时间。
     Range(NaiveTime, NaiveTime),
 }
 
@@ -26,8 +26,7 @@ impl Default for CheckTime {
 }
 
 impl CheckTime {
-    /// Resolve to a concrete `NaiveTime`. For `Range`, picks a random minute
-    /// within `[start, end)` each time it is called.
+    /// 解析为具体的 `NaiveTime`。对 `Range`,每次调用时在 `[start, end)` 内随机选取一个分钟。
     pub fn resolve(&self) -> NaiveTime {
         match self {
             CheckTime::Single(t) => *t,
@@ -66,14 +65,14 @@ impl serde::Serialize for CheckTime {
 impl<'de> serde::Deserialize<'de> for CheckTime {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        // Try single time first.
+        // 先尝试解析为单一时间。
         if let Ok(t) = NaiveTime::parse_from_str(&s, "%H:%M") {
             return Ok(CheckTime::Single(t));
         }
-        // Try range "HH:MM-HH:MM".
+        // 再尝试区间格式 "HH:MM-HH:MM"。
         let parts: Vec<&str> = s.splitn(2, '-').collect();
         if parts.len() == 2 {
-            // But only if both parts look like HH:MM (not a negative time like "-09:00").
+            // 且两部分都形如 HH:MM(排除 "-09:00" 这类负数写法)。
             if let (Ok(start), Ok(end)) = (
                 NaiveTime::parse_from_str(parts[0], "%H:%M"),
                 NaiveTime::parse_from_str(parts[1], "%H:%M"),
@@ -96,16 +95,16 @@ impl<'de> serde::Deserialize<'de> for CheckTime {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repo {
-    /// Local path of the git working tree (the repo on disk).
+    /// git 工作树在磁盘上的本地路径(即仓库目录)。
     pub local_path: PathBuf,
-    /// Jira issue key that this repo's daily worklog is written to.
+    /// 该仓库每日工时记录所对应的 Jira issue key。
     pub issue_key: String,
-    /// Committer email used to filter this repo's commits (wins over the
-    /// global `git_email` and over `git config user.email`).
+    /// 用于过滤该仓库提交的提交者邮箱(优先级高于顶层 `git_email`
+    /// 和 `git config user.email`)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_email: Option<String>,
-    /// Per-repo prompt file (relative to `local_path`). When present and the
-    /// file exists at runtime, its content replaces the default system prompt.
+    /// 每仓库的提示词文件(相对于 `local_path`)。运行时若存在该文件,
+    /// 其内容将替换默认系统提示词。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_file: Option<String>,
 }
@@ -115,60 +114,53 @@ pub struct Repo {
 pub struct Config {
     pub jira_base_url: String,
     pub jira_user: String,
-    /// Jira password (optional). When set, it is used only if the
-    /// environment variable [`JIRA_PASS_ENV`] is absent or empty.
+    /// Jira 密码(可选)。仅当环境变量 [`JIRA_PASS_ENV`] 未设置或为空时才使用此字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jira_password: Option<String>,
     #[serde(default = "default_tempo_version")]
     pub tempo_version: u32,
     pub worker: String,
-    /// Time of day the pipeline runs each day (HH:MM or HH:MM-HH:MM for random).
+    /// 流水线每日运行的时间(HH:MM;HH:MM-HH:MM 表示随机区间)。
     #[serde(default = "default_check_time")]
     pub check_time: CheckTime,
-    /// Window start (HH:MM) — only commits at/after this time count.
+    /// 窗口起始(HH:MM)— 只统计该时间之后的提交。
     #[serde(default = "default_work_start")]
     pub work_start: String,
-    /// Window end (HH:MM) — commits at/after this time are excluded (overtime).
+    /// 窗口结束(HH:MM)— 该时间之后的提交不计入(算作加班段)。
     #[serde(default = "default_work_end")]
     pub work_end: String,
-    /// Total daily work seconds (8h = 28800). Single repo gets all of it;
-    /// multiple repos split it by weight.
+    /// 每日总工时秒数(8h = 28800)。单仓库独占全部;多仓库按权重分摊。
     #[serde(default = "default_total_seconds")]
     pub total_daily_seconds: u64,
-    /// The `started` timestamp stamped on the Tempo worklog (the "clock-in"
-    /// time), independent of the git collection window (`work_start`/`work_end`).
-    /// Exact `"HH:MM"`; omitted -> falls back to `work_start`.
+    /// 打在 Tempo 工时记录上的 `started` 时间戳("打卡"时间),与 git
+    /// 收集窗口(`work_start`/`work_end`)无关。精确 "HH:MM" 格式;省略时回退到 `work_start`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worklog_start: Option<String>,
-    /// When true, also collect the user's commits from `work_end` until the
-    /// end of the target day and write a separate overtime worklog (started at
-    /// `work_end`, duration = latest commit − work_end, rounded up to 30 min,
-    /// min 1h). Default false.
+    /// 开启后,额外收集用户从 `work_end` 到目标日结束的提交,并单独写一条
+    /// 加班工时(started 为 `work_end`,时长 = 最晚提交时间 − work_end,向上取整
+    /// 到 30 分钟,最少 1 小时)。默认关闭。
     #[serde(default)]
     pub overtime: bool,
-    /// Directory the merged `.log` files are written to.
+    /// 合并后的 .log 文件的存放目录。
     #[serde(default = "default_log_dir")]
     pub log_dir: PathBuf,
-    /// Directory (or single file) holding `holidays-<year>.json`.
+    /// 存放 holidays-<年份>.json 的目录(或单个文件)。
     #[serde(default = "default_holidays_dir")]
     pub holidays_dir: PathBuf,
-    /// OpenAI-compatible endpoint base url, e.g. `http://host:port/v1`.
+    /// OpenAI 兼容接口的 base URL,例如 `http://host:port/v1`。
     pub ai_base_url: String,
     pub ai_api_key: String,
     pub ai_model: String,
-    /// One repo entry = one local path + one issue key.
+    /// 一条 [[repos]] 条目 = 一个本地路径 + 一个 issue key。
     #[serde(default)]
     pub repos: Vec<Repo>,
 
-    /// Global committer email used to filter each repo's commits. Overridden
-    /// per repo by `[[repos]].git_email`. When neither this nor
-    /// `git config user.email` (repo-local, then global) is set, the program
-    /// refuses to start.
+    /// 全局提交者邮箱,用于过滤各仓库提交;可被 [[repos]].git_email 逐仓库覆盖。
+    /// 本字段与 `git config user.email`(仓库级优先于全局)均未设置时,程序拒绝启动。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_email: Option<String>,
 
-    /// Relative path (under the Jira base URL) of the worklog search endpoint.
-    /// (POST is always used.)
+    /// 工时搜索接口的相对路径(基于 Jira base URL);始终使用 POST。
     #[serde(default = "default_search_path")]
     pub worklog_search_path: String,
 }
@@ -178,7 +170,7 @@ fn default_search_path() -> String {
 }
 
 impl Config {
-    /// Load and validate a config file.
+    /// 加载并校验配置文件。
     pub fn load(path: &std::path::Path) -> Result<Config> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
@@ -219,7 +211,7 @@ impl Config {
         if self.repos.is_empty() {
             bail!("at least one [[repos]] entry is required");
         }
-        // check_time is validated during deserialization (CheckTime).
+        // check_time 在反序列化时已校验(CheckTime)。
         let _ = parse_hhmm(&self.work_start)?;
         let _ = parse_hhmm(&self.work_end)?;
         if let Some(ws) = self.worklog_start.as_deref() {
@@ -261,8 +253,7 @@ impl Config {
         Ok(())
     }
 
-    /// Startup check: every repo must have a resolvable committer identity,
-    /// otherwise the collector would silently pick up everyone's commits.
+    /// 启动检查:每个仓库都必须能确定提交者身份,否则收集器会静默捞到所有人的提交。
     pub fn check_git_identity(&self) -> Result<()> {
         for r in &self.repos {
             if self.resolve_git_email(r).is_none() {
@@ -276,9 +267,9 @@ impl Config {
         Ok(())
     }
 
-    /// The committer email used to filter this repo's commits, resolved as:
-    /// `[[repos]].git_email` → top-level `git_email` → repo-local
-    /// `git config user.email` → global `git config user.email`.
+    /// 用于过滤该仓库提交的提交者邮箱,解析顺序:
+    /// `[[repos]].git_email` → 顶层 `git_email` → 仓库级 `git config user.email`
+    /// → 全局 `git config user.email`。
     pub fn resolve_git_email(&self, r: &Repo) -> Option<String> {
         let from_config = r
             .git_email
@@ -290,9 +281,8 @@ impl Config {
         from_config.or_else(|| crate::git_collector::git_identity(&r.local_path))
     }
 
-    /// Jira password: the environment variable [`JIRA_PASS_ENV`] wins when it
-    /// is set and non-empty; otherwise falls back to the `jira_password`
-    /// field in the config file.
+    /// Jira 密码:环境变量 [`JIRA_PASS_ENV`] 设置且非空时优先;否则回退到
+    /// 配置文件的 `jira_password` 字段。
     pub fn jira_password(&self) -> String {
         match std::env::var(JIRA_PASS_ENV) {
             Ok(v) if !v.trim().is_empty() => v,
@@ -306,8 +296,7 @@ impl Config {
     pub fn work_end_time(&self) -> NaiveTime {
         parse_hhmm(&self.work_end).expect("validated")
     }
-    /// The worklog `started` time (exact). Falls back to `work_start` when
-    /// `worklog_start` is omitted.
+    /// 工时的 `started` 时间(精确值)。`worklog_start` 省略时回退到 `work_start`。
     pub fn worklog_start_time(&self) -> NaiveTime {
         match self.worklog_start.as_deref() {
             Some(s) => parse_hhmm(s).expect("validated"),
@@ -352,8 +341,7 @@ fn parse_hhmm(s: &str) -> Result<NaiveTime> {
 mod tests {
     use super::*;
 
-    /// Tests run in parallel threads of one process, so anything that mutates
-    /// the shared `JIRA_PASS_ENV` must hold this lock while doing so.
+    /// 测试在同一进程内并行线程中运行,任何修改共享 `JIRA_PASS_ENV` 的操作都必须持有此锁。
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -426,7 +414,7 @@ ai_model = "m"
     #[test]
     fn worklog_start_accepts_exact_and_rejects_range() {
         let _env = env_lock();
-        // Exact time is accepted.
+        // 精确时间被接受。
         std::env::set_var(JIRA_PASS_ENV, "secret");
         let dir = tempdir();
         let p = dir.join("config.toml");
@@ -437,7 +425,7 @@ ai_model = "m"
             c.worklog_start_time(),
             NaiveTime::from_hms_opt(9, 0, 0).unwrap()
         );
-        // A range is no longer supported and must be rejected.
+        // 区间格式已不再支持,必须被拒绝。
         let body = sample().replace("[[repos]]", "worklog_start = \"09:00-10:00\"\n[[repos]]");
         std::fs::write(&p, body).unwrap();
         assert!(Config::load(&p).is_err(), "range format must be rejected");
@@ -493,7 +481,7 @@ ai_model = "m"
         std::env::set_var(JIRA_PASS_ENV, "secret");
         let c = Config::load(&p).unwrap();
         assert!(c.worklog_start.is_none());
-        // Fallback: exact work_start (09:00).
+        // 回退:精确的 work_start(09:00)。
         assert_eq!(
             c.worklog_start_time(),
             NaiveTime::from_hms_opt(9, 0, 0).unwrap()
@@ -535,7 +523,7 @@ ai_model = "m"
             Some("global@corp.com")
         );
         c.git_email = None;
-        // No config field anywhere, and r1/r2 are not git repos -> unresolved.
+        // 各处均无配置字段,且 r1/r2 不是 git 仓库 → 无法解析。
         assert!(c.resolve_git_email(&repo_inherit).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -543,7 +531,7 @@ ai_model = "m"
     #[test]
     fn resolve_git_email_falls_back_to_repo_git_config() {
         let _env = env_lock();
-        // Isolate from the machine's real global git config.
+        // 与本机真实的全球 git 配置隔离。
         let iso = tempdir();
         std::env::set_var("GIT_CONFIG_GLOBAL", iso.join("global-gitconfig"));
         std::env::set_var("GIT_CONFIG_SYSTEM", iso.join("system-gitconfig"));
@@ -578,7 +566,7 @@ ai_model = "m"
     #[test]
     fn check_git_identity_fails_when_unresolvable() {
         let _env = env_lock();
-        // Isolate from the machine's real global git config.
+        // 与本机真实的全球 git 配置隔离。
         let iso = tempdir();
         std::env::set_var("GIT_CONFIG_GLOBAL", iso.join("global-gitconfig"));
         std::env::set_var("GIT_CONFIG_SYSTEM", iso.join("system-gitconfig"));
@@ -600,7 +588,7 @@ ai_model = "m"
         let _ = std::fs::remove_dir_all(&iso);
     }
 
-    /// A Config with `repos` empty and everything else valid, rooted at `dir`.
+    /// `repos` 为空、其余全部有效的 Config,基于 `dir`。
     fn cfg(dir: &std::path::Path) -> Config {
         Config {
             jira_base_url: "http://x".into(),

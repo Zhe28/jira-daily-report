@@ -1,5 +1,5 @@
-//! Write the merged daily `.log` file: `[date]-[total_hours]小时.log` in `log_dir`,
-//! with one section per repo (issue).
+//! 写入合并的每日 `.log` 文件:`[日期]-[总小时数]小时.log`,位于 `log_dir`,
+//! 每个仓库(issue)一个段落。
 
 use std::path::{Path, PathBuf};
 
@@ -7,18 +7,18 @@ use chrono::NaiveDate;
 
 use crate::worklog_plan::{hours_label, Allocated};
 
-/// One repo's contribution to the daily log.
+/// 某仓库对日报的贡献内容。
 #[derive(Debug, Clone)]
 pub struct LogSection {
     pub issue_key: String,
     pub repo: String,
     pub seconds: u64,
     pub report: String,
-    /// True for the overtime part of the day (rendered as「加班」).
+    /// 表示当天加班部分(渲染为「加班」)。
     pub overtime: bool,
 }
 
-/// Build the merged log body.
+/// 构建合并后的日志正文。
 pub fn render(date: NaiveDate, total_seconds: u64, sections: &[LogSection]) -> String {
     let mut out = String::new();
     out.push_str(&format!("# 日报 {}\n", date.format("%Y-%m-%d")));
@@ -55,7 +55,7 @@ pub fn render(date: NaiveDate, total_seconds: u64, sections: &[LogSection]) -> S
     out
 }
 
-/// Build the output file path for the given date.
+/// 为给定日期构建输出文件路径。
 pub fn log_path(log_dir: &Path, date: NaiveDate, total_seconds: u64) -> PathBuf {
     log_dir.join(format!(
         "{}-{}小时.log",
@@ -64,7 +64,7 @@ pub fn log_path(log_dir: &Path, date: NaiveDate, total_seconds: u64) -> PathBuf 
     ))
 }
 
-/// Write the merged log. Creates `log_dir` if needed.
+/// 写入合并日志;必要时创建 `log_dir`。
 pub fn write_log(
     log_dir: &Path,
     date: NaiveDate,
@@ -78,7 +78,7 @@ pub fn write_log(
     Ok(path)
 }
 
-/// Merge allocations with reports into sections (order-preserving).
+/// 将分配结果与报告合并为段落(保持顺序)。
 pub fn build_sections(
     allocations: &[Allocated],
     reports: &std::collections::HashMap<String, String>,

@@ -1,16 +1,15 @@
-//! Call an OpenAI-compatible endpoint to turn a repo's day of commits
-//! (diff = primary, commit subjects = auxiliary) into a Chinese daily report.
+//! 调用 OpenAI 兼容端点,将仓库一天的提交(diff 为主要依据,commit 标题为辅助
+//! 参考)转写成中文日报。
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::git_collector::RepoCommits;
 
-/// Cap on the prompt payload size we send to the model (chars). Keeps requests
-/// small even for heavy days.
+/// 发送给模型的提示词载荷大小上限(字符数)。即使忙碌的日子也能保持请求较小。
 pub const MAX_PROMPT_CHARS: usize = 24_000;
 
-/// Minimal abstraction over the AI backend so the pipeline is testable offline.
+/// 对 AI 后端的最小抽象,使流水线可离线测试。
 pub trait AIClient: Send + Sync {
     fn generate(&self, system: &str, user: &str) -> Result<String>;
 }
@@ -28,7 +27,7 @@ struct Message {
     content: String,
 }
 
-/// Real backend: OpenAI-compatible `/chat/completions`.
+/// 真实后端:OpenAI 兼容的 `/chat/completions`。
 pub struct OpenAiClient {
     http: reqwest::blocking::Client,
     base_url: String,
@@ -84,9 +83,8 @@ impl AIClient for OpenAiClient {
     }
 }
 
-/// System prompt (Chinese) telling the model what to produce.
-/// `overtime` selects the post-work-hours variant (the normal variant is
-/// byte-identical to the original prompt).
+/// 系统提示词(中文),告诉模型要产出什么。
+/// `overtime` 选择下班后的变体(日常变体与原提示词逐字节一致)。
 pub fn system_prompt(overtime: bool) -> &'static str {
     if overtime {
         "你是软件研发日报撰写助手。用户会提供某个仓库某一天下班后的加班时段（18:00 之后至当天结束）的 git 提交 diff（主要依据）和 commit 信息（辅助参考）。\n\
@@ -105,8 +103,7 @@ pub fn system_prompt(overtime: bool) -> &'static str {
     }
 }
 
-/// Try to read a per-repo prompt file. Returns None if the file doesn't
-/// exist or is empty. The path is relative to the repo root.
+/// 尝试读取每仓库的提示词文件。文件不存在或为空时返回 None。路径相对于仓库根目录。
 pub fn read_repo_prompt(repo_path: &std::path::Path, prompt_file: &str) -> Option<String> {
     let full_path = repo_path.join(prompt_file);
     match std::fs::read_to_string(&full_path) {
@@ -132,7 +129,7 @@ pub fn read_repo_prompt(repo_path: &std::path::Path, prompt_file: &str) -> Optio
     }
 }
 
-/// Truncate a single patch to a char budget (keeps the head, appends a marker).
+/// 将单个 patch 截断到字符预算内(保留开头,追加标记)。
 pub fn truncate_patch(patch: &str, budget: usize) -> String {
     if patch.chars().count() <= budget {
         return patch.to_string();
@@ -142,7 +139,7 @@ pub fn truncate_patch(patch: &str, budget: usize) -> String {
     s
 }
 
-/// Assemble the user prompt: diff (primary) + commit subjects (aux).
+/// 组装用户提示词:diff(主要依据)+ commit 标题(辅助参考)。
 pub fn build_user_prompt(rc: &RepoCommits) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -159,15 +156,15 @@ pub fn build_user_prompt(rc: &RepoCommits) -> String {
         out.push_str(&format!("--- commit {} ---\n", &c.sha));
         out.push_str(&truncate_patch(&c.patch, MAX_PROMPT_CHARS));
     }
-    // Cap the whole prompt.
+    // 控制整个提示词的大小。
     if out.chars().count() > MAX_PROMPT_CHARS {
         out = truncate_patch(&out, MAX_PROMPT_CHARS);
     }
     out
 }
 
-/// Generate the report text for one repo's commits.
-/// If `custom_prompt` is provided, it replaces the default system prompt.
+/// 为某仓库的提交生成日报文本。
+/// 若提供 `custom_prompt`,则替换默认系统提示词。
 pub fn report_repo_commits(
     client: &dyn AIClient,
     rc: &RepoCommits,
@@ -193,7 +190,7 @@ mod tests {
     struct Mock;
     impl AIClient for Mock {
         fn generate(&self, _system: &str, user: &str) -> Result<String> {
-            // Echo a marker proving the diff reached the prompt.
+            // 回显一个标记,证明 diff 已到达提示词。
             Ok(if user.contains("+hello") {
                 "增加测试功能".into()
             } else {
@@ -245,10 +242,10 @@ mod tests {
 
     #[test]
     fn overtime_system_prompt_differs() {
-        // The normal variant is the original prompt (mentions 09:00-18:00).
+        // 日常变体是原提示词(提及 09:00-18:00)。
         assert!(system_prompt(false).contains("09:00-18:00"));
         assert!(!system_prompt(false).contains("加班"));
-        // The overtime variant mentions the post-work window, not 09:00-18:00.
+        // 加班变体提及下班后的时段,而非 09:00-18:00。
         assert!(system_prompt(true).contains("加班"));
         assert!(!system_prompt(true).contains("09:00-18:00"));
     }

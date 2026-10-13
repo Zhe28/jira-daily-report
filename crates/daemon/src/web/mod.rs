@@ -19,18 +19,18 @@ pub struct LastRun {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_reason: Option<String>,
-    /// (issue_key, seconds, worklog_id)
+    /// (issue_key, 秒数, worklog_id)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created: Vec<(String, u64, u64)>,
-    /// dry-run: (issue_key, seconds)
+    /// dry-run:(issue_key, 秒数)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planned: Vec<(String, u64)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_existing: Vec<String>,
-    /// (issue_key, error)
+    /// (issue_key, 错误)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<(String, String)>,
-    /// Total overtime seconds written/planned for the day (None = none).
+    /// 当日已写/计划写入的加班总秒数(None = 无)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overtime_seconds: Option<u64>,
 }

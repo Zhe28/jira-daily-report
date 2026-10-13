@@ -1,5 +1,5 @@
-//! The daily pipeline: holiday check -> git collect -> (skip?) -> AI report ->
-//! hour allocation -> merged .log -> Tempo worklog write (per issue) -> state.
+//! 每日流水线:节假日检查 → git 收集 → (跳过?) → AI 报告 → 工时分配 →
+//! 合并 .log → Tempo 工时写入(按 issue) → state。
 
 use std::collections::BTreeMap;
 
@@ -13,13 +13,12 @@ use crate::state::State;
 use crate::worklog_plan::{self, RepoWeight};
 use chrono::{NaiveDate, NaiveTime};
 
-/// Abstraction over Tempo so the pipeline is testable offline.
+/// 对 Tempo 的抽象,使流水线可离线测试。
 pub trait WorklogStore: Send + Sync {
     fn reachable(&self) -> anyhow::Result<()>;
     fn issue_id(&self, key: &str) -> anyhow::Result<u64>;
-    /// `started` times of this issue's worklogs on `date`; `None` = entry
-    /// exists but its `started` could not be parsed (treat as blocking both
-    /// the normal and the overtime write).
+    /// 该 issue 在 `date` 上所有工时的 `started` 时间;`None` = 条目存在但
+    /// `started` 无法解析(视为同时阻塞日常与加班写入)。
     fn worklog_started_times(
         &self,
         id: u64,
@@ -35,46 +34,43 @@ pub trait WorklogStore: Send + Sync {
     ) -> anyhow::Result<u64>;
 }
 
-/// One repo that had commits on the target day.
+/// 目标日有提交的某个仓库。
 #[derive(Debug, Clone)]
 pub struct RepoDay {
     pub repo: String,
     pub issue_key: String,
-    /// Commits in the normal work window ([work_start, work_end)).
+    /// 常规工作窗口([work_start, work_end))内的提交。
     pub commits: RepoCommits,
-    /// Commits from work_end until end of day (overtime; empty when none, or
-    /// when `overtime` is disabled in config).
+    /// 从 work_end 到日终的提交(加班段;无提交或配置关闭加班时为空)。
     pub overtime_commits: RepoCommits,
     pub prompt_file: Option<String>,
 }
 
-/// Result of the collect phase.
+/// 收集阶段的返回结果。
 #[derive(Debug)]
 pub struct CollectResult {
-    /// Set when the whole day is skipped (holiday / no commits).
+    /// 整日被跳过时(节假日/无提交)设置原因。
     pub skipped: Option<String>,
     pub repo_days: Vec<RepoDay>,
 }
 
-/// Result of the full day processing.
+/// 整日处理的结果。
 #[derive(Debug, Default)]
 pub struct DayOutcome {
     pub skipped_reason: Option<String>,
     pub log_file: Option<std::path::PathBuf>,
     pub report_by_issue: BTreeMap<String, String>,
-    pub created: Vec<(String, u64, u64)>, // (issue_key, seconds, worklog_id)
-    pub planned: Vec<(String, u64)>,      // dry-run: (issue_key, seconds)
-    pub skipped_existing: Vec<String>,    // issue_key already had a worklog
-    pub failed: Vec<(String, String)>,    // (issue_key, error)
-    /// Total overtime seconds written (or planned) for the day; None when the
-    /// day had no overtime worklog.
+    pub created: Vec<(String, u64, u64)>, // (issue_key, 秒数, worklog_id)
+    pub planned: Vec<(String, u64)>,      // dry-run:(issue_key, 秒数)
+    pub skipped_existing: Vec<String>,    // issue_key 已有工时记录
+    pub failed: Vec<(String, String)>,    // (issue_key, 错误)
+    /// 当日已写(或计划)的加班总秒数;当日无加班工时记录时为 None。
     pub overtime_seconds: Option<u64>,
 }
 
-/// Collect phase: holiday check + git collect. Returns a skip reason if the
-/// whole day should be skipped.
+/// 收集阶段:节假日检查 + git 收集。应整日跳过时返回跳过原因。
 pub fn collect_day(cfg: &Config, date: NaiveDate) -> anyhow::Result<CollectResult> {
-    // 1) Holiday gate.
+    // 1) 节假日闸门。
     match holidays::is_holiday(&cfg.holidays_dir, date) {
         HolidayCheck::Holiday(name) => {
             tracing::info!("{} 是法定节假日（{name}），整日跳过", date);
@@ -89,8 +85,7 @@ pub fn collect_day(cfg: &Config, date: NaiveDate) -> anyhow::Result<CollectResul
         HolidayCheck::NotHoliday => {}
     }
 
-    // 2) Git collect per repo. Normal pass: [work_start, work_end). Overtime
-    //    pass (when enabled): [work_end, end of day).
+    // 2) 逐仓库 git 收集。常规段:[work_start, work_end);加班段(开启时):[work_end, 日终)。
     let mut repo_days = Vec::new();
     for r in &cfg.repos {
         let email = cfg.resolve_git_email(r).ok_or_else(|| {
@@ -142,20 +137,19 @@ pub fn collect_day(cfg: &Config, date: NaiveDate) -> anyhow::Result<CollectResul
     })
 }
 
-/// Format a datetime as `YYYY-MM-DD HH:MM:SS` (no millisecond suffix; the Tempo
-/// client appends `.000`).
+/// 将日期时间格式化为 YYYY-MM-DD HH:MM:SS(不带毫秒后缀;Tempo 客户端会追加 .000)。
 fn started_str(dt: chrono::NaiveDateTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// Resolve the worklog `started` string for `date`: the configured exact
-/// `worklog_start` time (or `work_start` when omitted), at 0 seconds.
+/// 解析 `date` 的工时 started 字符串:配置中精确的 worklog_start 时间(省略时
+/// 用 work_start),秒数为 0。
 fn resolve_started(cfg: &Config, date: NaiveDate) -> String {
     let dt = date.and_time(cfg.worklog_start_time());
     started_str(dt)
 }
 
-/// Process phase: AI report + hours + .log + Tempo writes + state.
+/// 处理阶段:AI 报告 + 工时 + .log + Tempo 写入 + state。
 pub fn process_day(
     cfg: &Config,
     date: NaiveDate,
@@ -169,7 +163,7 @@ pub fn process_day(
         return Ok(outcome);
     }
 
-    // 1) Normal pass: AI report + weights for repos with work-window commits.
+    // 1) 常规段:对有窗口内提交的仓库生成 AI 报告 + 权重。
     let mut reports: BTreeMap<String, Result<String, String>> = BTreeMap::new();
     let mut weights: Vec<RepoWeight> = Vec::new();
     for rd in repo_days.iter().filter(|rd| rd.commits.has_commits()) {
@@ -181,9 +175,8 @@ pub fn process_day(
     }
     let normal_allocs = worklog_plan::allocate(cfg.total_daily_seconds, &weights);
 
-    // 2) Overtime pass (when enabled): each overtime repo computes its own
-    //    duration from its own latest overtime commit (per-repo, independent).
-    //    One worklog per repo; no cross-repo global max / weighting.
+    // 2) 加班段(开启时):每个有加班提交的仓库按自身最晚一笔加班提交独立计算时长。
+    //    一个仓库一条工时记录;不做跨仓库全局 max/加权。
     let mut ot_allocs: Vec<worklog_plan::Allocated> = Vec::new();
     let mut ot_reports: BTreeMap<String, Result<String, String>> = BTreeMap::new();
     let mut ot_total_secs: u64 = 0;
@@ -222,7 +215,7 @@ pub fn process_day(
         }
     }
 
-    // 3) Readiness check (<=5s) — notify on failure, continue (best effort).
+    // 3) 就绪检查(<=5s)—失败时通知并继续(尽力而为)。
     if let Err(e) = store.reachable() {
         notify::notify(
             "Jira 检查超时/失败",
@@ -230,7 +223,7 @@ pub fn process_day(
         );
     }
 
-    // 4) Merged .log (local artifact; written even in dry-run for review).
+    // 4) 合并 .log(本地产物;dry-run 时也写出供审阅)。
     let mut sections: Vec<LogSection> = Vec::new();
     for a in &normal_allocs {
         sections.push(section_from(
@@ -259,10 +252,9 @@ pub fn process_day(
     let log_file = logfile::write_log(&cfg.log_dir, date, log_total, &sections)?;
     outcome.log_file = Some(log_file.clone());
 
-    // 5) Tempo writes (gated by dry_run; per-issue dedup via live check).
-    //    One snapshot of existing `started` times per issue, shared by both the
-    //    normal (day, started < work_end) and overtime (evening, started >=
-    //    work_end) decisions.
+    // 5) Tempo 写入(受 dry_run 控制;按 issue 实时查重去重)。
+    //    每个 issue 一次现有 started 时间快照,日常(started < work_end)与加班
+    //    (evening, started >= work_end)两种判定共用。
     let started_normal = resolve_started(cfg, date);
     let started_ot = started_str(date.and_time(cfg.work_end_time()));
     let work_end = cfg.work_end_time();
@@ -316,7 +308,7 @@ pub fn process_day(
         let Some(Some(res)) = snapshot.get(&issue_key) else {
             continue;
         };
-        // On a check error, assume "may exist" and skip, to avoid duplicates.
+        // 检查出错时假设"可能已存在"而跳过,避免重复。
         let times = match res {
             Ok(t) => t,
             Err(_) => {
@@ -324,7 +316,7 @@ pub fn process_day(
                 continue;
             }
         };
-        // A `None` entry (unparseable started) conservatively blocks both buckets.
+        // None 条目(started 无法解析)保守地同时阻塞两个桶。
         let blocked = if evening {
             times
                 .iter()
@@ -378,7 +370,7 @@ pub fn process_day(
         }
     }
 
-    // 6) Persist the report drafts (for the .log we already wrote them).
+    // 6) 持久化报告草稿(.log 已写出它们)。
     for (k, r) in &reports {
         if let Ok(t) = r {
             outcome.report_by_issue.insert(k.clone(), t.clone());
@@ -453,14 +445,14 @@ fn section_from(
     }
 }
 
-/// Parse an RFC3339 commit timestamp to local time of day (for overtime duration).
+/// 将 RFC3339 提交时间戳解析为本地时刻(用于计算加班时长)。
 fn parse_local_time(cdate: &str) -> Option<NaiveTime> {
     chrono::DateTime::parse_from_rfc3339(cdate)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Local).time())
 }
 
-/// Record the outcome in state (only for real, non-dry-run runs).
+/// 记录结果到 state(仅限真实的、非 dry-run 运行)。
 pub fn save_state(cfg: &Config, date: NaiveDate, outcome: &DayOutcome, dry_run: bool) {
     if dry_run {
         return;
@@ -479,7 +471,7 @@ pub fn save_state(cfg: &Config, date: NaiveDate, outcome: &DayOutcome, dry_run: 
     }
 }
 
-/// Persist the skip reason (only for real, non-dry-run runs).
+/// 持久化跳过原因(仅限真实的、非 dry-run 运行)。
 pub fn save_skip(cfg: &Config, date: NaiveDate, reason: &str, dry_run: bool) {
     if dry_run {
         return;
@@ -491,7 +483,7 @@ pub fn save_skip(cfg: &Config, date: NaiveDate, reason: &str, dry_run: bool) {
     }
 }
 
-/// Top-level: collect + process + state + print summary.
+/// 顶层入口:收集 + 处理 + state + 打印摘要。
 pub fn run_day(
     cfg: &Config,
     date: NaiveDate,
@@ -546,7 +538,7 @@ mod tests {
     use super::*;
     use crate::git_collector::Commit;
 
-    // --- Mocks ---
+    // --- 模拟对象 ---
     struct MockAi {
         text: String,
         fail: bool,
@@ -562,12 +554,12 @@ mod tests {
 
     struct MockStore {
         ids: BTreeMap<String, u64>,
-        /// issue id -> `started` times of existing worklogs on the target day
-        /// (a `None` entry simulates an unparseable `started`).
+        /// issue id → 目标日已有工时的 `started` 时间列表
+        /// (`None` 条目模拟无法解析的 `started`)。
         existing: BTreeMap<u64, Vec<Option<NaiveTime>>>,
         reachable_ok: bool,
         created: std::sync::Mutex<Vec<String>>,
-        started: std::sync::Mutex<Vec<String>>, // captured `started` per write
+        started: std::sync::Mutex<Vec<String>>, // 每次写入捕获的 `started`
     }
     impl WorklogStore for MockStore {
         fn reachable(&self) -> anyhow::Result<()> {
@@ -756,7 +748,7 @@ mod tests {
             text: "x".into(),
             fail: false,
         };
-        // A hand-written day entry (09:00 < 18:00) blocks the normal write.
+        // 手写的白天条目(09:00 < 18:00)只阻塞日常写入。
         let store = store_with(
             &[("A-1".to_string(), ID_A1)],
             vec![(ID_A1, vec![Some(nt(9, 0))])],
@@ -800,13 +792,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- overtime ---
+    // --- 加班 ---
 
     #[test]
     fn overtime_writes_second_worklog_at_work_end() {
         let dir = tmp();
         let c = cfg(&dir);
-        // Day commit at 10:00 + overtime commit at 20:00 -> 2h overtime.
+        // 白天提交 10:00 + 加班提交 20:00 → 加班 2h。
         let rd = vec![rd_both()];
         let ai = MockAi {
             text: "日报".into(),
@@ -820,7 +812,7 @@ mod tests {
         let starteds = store.started.lock().unwrap().clone();
         assert_eq!(starteds, vec!["2026-09-09 09:00:00", "2026-09-09 18:00:00"]);
         assert_eq!(o.overtime_seconds, Some(7200));
-        // Merged log: 8h + 2h = 10h file, overtime section marked.
+        // 合并日志:8h + 2h = 10h 文件,加班段已标记。
         let log_file = o.log_file.as_ref().unwrap().clone();
         assert_eq!(
             log_file.file_name().unwrap().to_string_lossy(),
@@ -840,7 +832,7 @@ mod tests {
             text: "日报".into(),
             fail: false,
         };
-        // A hand-written evening entry (18:30 >= 18:00) blocks only overtime.
+        // 手写的晚间条目(18:30 >= 18:00)只阻塞加班写入。
         let store = store_with(
             &[("A-1".to_string(), ID_A1)],
             vec![(ID_A1, vec![Some(nt(18, 30))])],
@@ -861,7 +853,7 @@ mod tests {
             text: "日报".into(),
             fail: false,
         };
-        // A day entry (09:00 < 18:00) blocks only the normal write.
+        // 手写的白天条目(09:00 < 18:00)只阻塞日常写入。
         let store = store_with(
             &[("A-1".to_string(), ID_A1)],
             vec![(ID_A1, vec![Some(nt(9, 0))])],
@@ -882,7 +874,7 @@ mod tests {
             text: "日报".into(),
             fail: false,
         };
-        // Both of the tool's own entries exist -> both blocked.
+        // 工具自己写的两条记录都存在 → 两者都被阻塞。
         let store = store_with(
             &[("A-1".to_string(), ID_A1)],
             vec![(ID_A1, vec![Some(nt(9, 0)), Some(nt(18, 0))])],
@@ -897,7 +889,7 @@ mod tests {
     fn overtime_only_day_writes_only_overtime() {
         let dir = tmp();
         let c = cfg(&dir);
-        // No day commits, one overtime commit at 20:00 -> 2h only, no 8h entry.
+        // 无白天提交,一笔 20:00 的加班提交 → 只写 2h,不写 8h 条目。
         let rd = vec![rd_overtime("night", "20:00")];
         let ai = MockAi {
             text: "加班日报".into(),
@@ -920,9 +912,9 @@ mod tests {
     fn multi_repo_overtime_computed_per_repo() {
         let dir = tmp();
         let c = cfg(&dir);
-        // Two repos with overtime commits. Per-repo: A-1 latest 20:35 -> 10800,
-        // B-1 latest 19:00 -> 3600 (exactly 1h over work_end, at the 1h floor).
-        // No cross-repo global max / weighting.
+        // 两个仓库都有加班提交。按仓库独立:A-1 最晚 20:35 → 10800,
+        // B-1 最晚 19:00 → 3600(恰好比 work_end 多 1h,处于 1h 下限)。
+        // 不做跨仓库全局 max/加权。
         let rd_b = {
             let mut rd = rd_overtime("b-night", "19:00");
             rd.issue_key = "B-1".into();
@@ -940,7 +932,7 @@ mod tests {
         );
         let o = process_day(&c, DATE, &rd, &ai, &store, false).unwrap();
         assert_eq!(o.created.len(), 2);
-        // Order follows repo_days: A-1 first, B-1 second.
+        // 顺序跟随 repo_days:A-1 在前,B-1 在后。
         assert_eq!(o.created[0].0, "A-1");
         assert_eq!(o.created[0].1, 10800);
         assert_eq!(o.created[1].0, "B-1");
@@ -948,7 +940,7 @@ mod tests {
         let sum: u64 = o.created.iter().map(|x| x.1).sum();
         assert_eq!(sum, 14400);
         assert_eq!(o.overtime_seconds, Some(14400));
-        // Both stamped at work_end.
+        // 两条都打时间戳为 work_end。
         for s in store.started.lock().unwrap().iter() {
             assert_eq!(s.as_str(), "2026-09-09 18:00:00");
         }
@@ -960,8 +952,8 @@ mod tests {
         let dir = tmp();
         let mut c = cfg(&dir);
         c.overtime = false;
-        // Overtime commits present but the feature is off -> today's behavior:
-        // exactly one 8h write, no evening write.
+        // 有加班提交但功能关闭 → 当天行为:
+        // 恰好一条 8h 写入,无晚间写入。
         let rd = vec![rd_both()];
         let ai = MockAi {
             text: "日报".into(),
@@ -989,7 +981,7 @@ mod tests {
             text: "日报".into(),
             fail: false,
         };
-        // worklog_started_times errors -> both entries for the issue skipped.
+        // worklog_started_times 出错 → 该 issue 的两条记录都被跳过。
         let store = ErrStore {
             store: store_with(&[("A-1".to_string(), ID_A1)], vec![]),
         };
@@ -1045,7 +1037,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- resolve_started (worklog time: exact configured time) ---
+    // --- resolve_started(worklog 时间:精确配置值) ---
 
     #[test]
     fn resolve_started_exact_is_fixed() {
@@ -1054,7 +1046,7 @@ mod tests {
         c.worklog_start = Some("09:00".into());
         let s = resolve_started(&c, DATE);
         assert_eq!(s, "2026-09-09 09:00:00");
-        // Repeated calls stay identical.
+        // 重复调用结果一致。
         assert_eq!(s, resolve_started(&c, DATE));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1062,14 +1054,14 @@ mod tests {
     #[test]
     fn resolve_started_falls_back_to_work_start_when_absent() {
         let dir = tmp();
-        let c = cfg(&dir); // worklog_start: None, work_start 09:00
+        let c = cfg(&dir); // worklog_start: None,work_start 为 09:00
         assert_eq!(resolve_started(&c, DATE), "2026-09-09 09:00:00");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn process_day_stamps_configured_started() {
-        // Exact configured time must be stamped on the worklog verbatim.
+        // 精确配置的 time 必须原样打在工时记录上。
         let dir = tmp();
         let mut c = cfg(&dir);
         c.worklog_start = Some("14:00".into());

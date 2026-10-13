@@ -1,12 +1,11 @@
-//! Hours allocation rule:
-//! - Exactly one repo has commits that day -> it gets the full daily total (8h).
-//! - Multiple repos -> split the daily total by weight = (commit count +
-//!   added lines + removed lines), with the remainder going to the first repo
-//!   so the total always sums to the daily total.
+//! 工时分配规则:
+//! - 当天恰好只有一个仓库有提交 → 独占当日全部工时(8h)。
+//! - 多个仓库 → 按权重 = (提交数 + 新增行数 + 删除行数) 分摊当日总工时,
+//!   余数归第一个仓库,保证总和始终等于当日总工时。
 
 use chrono::NaiveTime;
 
-/// Weight inputs for one repo.
+/// 单个仓库的权重输入。
 #[derive(Debug, Clone)]
 pub struct RepoWeight {
     pub repo: String,
@@ -18,8 +17,7 @@ pub struct RepoWeight {
 
 impl RepoWeight {
     pub fn weight(&self) -> u64 {
-        // commit count + diff churn. Guard against zero (repo with an empty-diff
-        // commit) so it still gets a minimal share.
+        // 提交数 + diff 变动量。防止为零(空 diff 提交的仓库),保证其仍获得最小份额。
         let w = self.commit_count + self.added + self.removed;
         if w == 0 {
             1
@@ -29,7 +27,7 @@ impl RepoWeight {
     }
 }
 
-/// Allocated seconds for one repo's worklog.
+/// 某仓库工时的分配秒数。
 #[derive(Debug, Clone)]
 pub struct Allocated {
     pub issue_key: String,
@@ -37,12 +35,12 @@ pub struct Allocated {
     pub seconds: u64,
 }
 
-/// Compute per-issue seconds so the total equals `total_seconds`.
+/// 计算各 issue 的秒数,使总和等于 `total_seconds`。
 pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
     if repos.is_empty() {
         return vec![];
     }
-    // Single repo: full total, no split.
+    // 单仓库:独占全部,不分摊。
     if repos.len() == 1 {
         return vec![Allocated {
             issue_key: repos[0].issue_key.clone(),
@@ -56,7 +54,7 @@ pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
     let mut assigned = 0u64;
     for (i, r) in repos.iter().enumerate() {
         let secs = if i == repos.len() - 1 {
-            // Last repo absorbs rounding remainder so the total is exact.
+            // 最后一个仓库吸收舍入余数,保证总和精确。
             total_seconds - assigned
         } else {
             let s = total_seconds * r.weight() / total_weight;
@@ -72,28 +70,27 @@ pub fn allocate(total_seconds: u64, repos: &[RepoWeight]) -> Vec<Allocated> {
     alloc
 }
 
-/// Overtime duration (per repo), in seconds: `last_commit - work_end`,
-/// rounded UP to the nearest 30 minutes, with a floor of 1 hour and no cap.
-/// `last_commit` is the latest overtime commit time for one repo on the
-/// target day (always `>= work_end` by construction of the collection window).
-/// The pipeline calls this once per overtime repo, so each repo's overtime is
-/// independent (no cross-repo global max / weighting).
+/// 加班时长(每仓库独立),单位秒:`last_commit - work_end`,向上取整到最近的
+/// 30 分钟,下限 1 小时,无上限。
+/// `last_commit` 是目标日该仓库最晚的一笔加班提交时间(按收集窗口的构造方式,
+/// 恒 >= work_end)。流水线对每个加班仓库各调用一次,故各仓库加班相互独立
+/// (不做跨仓库全局 max/加权)。
 ///
-/// Examples (work_end = 18:00): 18:00/18:08/18:29/18:30/18:50 -> 3600;
-/// 19:10 -> 5400; 19:55 -> 7200; 20:35 -> 10800; 23:59 -> 21600.
+/// 示例(work_end = 18:00):18:00/18:08/18:29/18:30/18:50 -> 3600;
+/// 19:10 -> 5400;19:55 -> 7200;20:35 -> 10800;23:59 -> 21600。
 pub fn overtime_total_seconds(last_commit: NaiveTime, work_end: NaiveTime) -> u64 {
     let raw_minutes = ((last_commit - work_end).num_seconds() / 60) as u64;
     let rounded_up = (raw_minutes + 29) / 30 * 30 * 60;
     rounded_up.max(3600)
 }
 
-/// Total hours (as a display fraction) for the log filename.
+/// 用于日志文件名的总小时数(显示用分数形式)。
 pub fn total_hours(total_seconds: u64) -> f64 {
     total_seconds as f64 / 3600.0
 }
 
-/// Format the hours for a filename, e.g. 28800s -> "8", 14400s -> "4".
-/// Returns an integer when whole, otherwise one decimal.
+/// 格式化文件名中的小时数,例如 28800s -> "8"、14400s -> "4"。
+/// 整数时返回整数,否则保留一位小数。
 pub fn hours_label(total_seconds: u64) -> String {
     let h = total_hours(total_seconds);
     if (h - h.round()).abs() < 1e-9 {
@@ -133,19 +130,19 @@ mod tests {
                 commit_count: 3,
                 added: 100,
                 removed: 10,
-            }, // w=113
+            }, // 权重=113
             RepoWeight {
                 repo: "b".into(),
                 issue_key: "B-1".into(),
                 commit_count: 1,
                 added: 10,
                 removed: 2,
-            }, // w=13
+            }, // 权重=13
         ];
         let a = allocate(28800, &repos);
         let sum: u64 = a.iter().map(|x| x.seconds).sum();
         assert_eq!(sum, 28800);
-        // a (heavier) gets more than b
+        // a(更重)分得比 b 多
         assert!(a[0].seconds > a[1].seconds);
     }
 
@@ -195,27 +192,27 @@ mod tests {
     #[test]
     fn overtime_seconds_rounds_up_half_hour_min_one_hour() {
         let end = t(18, 0);
-        // Floor at 1h.
+        // 1h 下限。
         assert_eq!(overtime_total_seconds(t(18, 0), end), 3600);
         assert_eq!(overtime_total_seconds(t(18, 8), end), 3600);
         assert_eq!(overtime_total_seconds(t(18, 29), end), 3600);
-        // Boundary: exactly 30 min stays 1h, just over -> still rounds to 60 min.
+        // 边界:恰好 30 分钟仍是 1h,稍过一点 → 四舍五入到 60 分钟。
         assert_eq!(overtime_total_seconds(t(18, 30), end), 3600);
         assert_eq!(overtime_total_seconds(t(18, 31), end), 3600);
         assert_eq!(overtime_total_seconds(t(18, 50), end), 3600);
-        // Round up to next half hour.
+        // 向上取整到下一个半小时。
         assert_eq!(overtime_total_seconds(t(19, 0), end), 3600);
         assert_eq!(overtime_total_seconds(t(19, 1), end), 5400);
         assert_eq!(overtime_total_seconds(t(19, 10), end), 5400);
         assert_eq!(overtime_total_seconds(t(19, 55), end), 7200);
         assert_eq!(overtime_total_seconds(t(20, 35), end), 10800);
-        // No cap: 5h59m -> 6h.
+        // 无上限:5h59m -> 6h。
         assert_eq!(overtime_total_seconds(t(23, 59), end), 21600);
     }
 
     #[test]
     fn overtime_seconds_works_for_other_work_end() {
-        // work_end 17:00: 17:05 -> 1h floor, 17:40 -> 1h, 18:10 -> 1.5h.
+        // work_end 17:00:17:05 -> 1h 下限,17:40 -> 1h,18:10 -> 1.5h。
         assert_eq!(overtime_total_seconds(t(17, 5), t(17, 0)), 3600);
         assert_eq!(overtime_total_seconds(t(17, 40), t(17, 0)), 3600);
         assert_eq!(overtime_total_seconds(t(18, 10), t(17, 0)), 5400);

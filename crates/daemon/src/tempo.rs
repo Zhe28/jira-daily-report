@@ -1,15 +1,11 @@
-//! Jira + Tempo REST client (cookie-based session auth via login.jsp).
+//! Jira + Tempo REST 客户端(基于 cookie 的会话认证,经 login.jsp)。
 //!
-//! - `issue_id(issue_key)` — resolve an issue key to its numeric id (needed to
-//!   create a worklog).
-//! - `worklog_started_times(issue_id, date)` — the `started` times of this
-//!   issue's worklogs on a date (used to avoid overwriting hand-written logs,
-//!   and to allow a separate overtime worklog alongside the daily one).
-//! - `create_worklog(...)` — write a new Tempo worklog.
+//! - `issue_id(issue_key)` — 将 issue key 解析为数字 id(创建工时所需)。
+//! - `worklog_started_times(issue_id, date)` — 该 issue 在指定日期上所有工时的
+//!   `started` 时间(用于避免覆盖手写记录,并允许在日常之外单独写一条加班工时)。
+//! - `create_worklog(...)` — 写入新的 Tempo 工时。
 //!
-//! The exact search endpoint/method varies across Tempo versions; the search
-//! path and method are configurable so they can be adjusted against the live
-//! server without code changes.
+//! 搜索端点/方法在不同 Tempo 版本间有差异;搜索路径与方法可配置,以便在不改代码的情况下针对线上服务器调整。
 
 use std::time::Duration;
 
@@ -30,7 +26,7 @@ pub struct TempoClient {
 
 #[derive(Deserialize)]
 struct IssueJson {
-    /// Jira returns the issue id as a string, e.g. `"155324"`.
+    /// Jira 返回的 issue id 是字符串,如 `"155324"`。
     id: String,
 }
 
@@ -38,7 +34,7 @@ struct IssueJson {
 struct WorklogJson {
     #[serde(default)]
     issue: Option<IssueRef>,
-    /// e.g. "2026-09-01 09:00:00.000" — the work date.
+    /// 例如 "2026-09-01 09:00:00.000" — 工作日期。
     #[serde(default)]
     started: Option<String>,
 }
@@ -48,7 +44,7 @@ struct IssueRef {
     id: u64,
 }
 
-/// Parse a Tempo `started` value ("YYYY-MM-DD HH:MM:SS.000") into its time of day.
+/// 将 Tempo 的 `started` 值("YYYY-MM-DD HH:MM:SS.000")解析为其时刻部分。
 fn parse_started_time(s: &str) -> Option<NaiveTime> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
         .ok()
@@ -84,7 +80,7 @@ impl TempoClient {
         }
     }
 
-    /// Execute a request; if the server returns 401, re-login and retry once.
+    /// 执行请求;若服务器返回 401,则重新登录后重试一次。
     fn send_with_relogin(
         &self,
         build: impl Fn() -> reqwest::blocking::RequestBuilder,
@@ -98,8 +94,8 @@ impl TempoClient {
         Ok(resp)
     }
 
-    /// Authenticate via the Jira login form (cookie-based session).
-    /// Must be called before any API request.
+    /// 通过 Jira 登录表单进行认证(cookie 会话)。
+    /// 必须在任何 API 请求之前调用。
     pub fn login(&self) -> Result<()> {
         let url = format!("{}/login.jsp", self.base_url);
         let resp = self
@@ -117,12 +113,12 @@ impl TempoClient {
         if status.is_server_error() {
             bail!("Jira login returned {status}");
         }
-        // login.jsp returns 200 on success (or 302 redirect — both ok).
-        // The cookie jar now holds JSESSIONID + XSRF token for subsequent requests.
+        // login.jsp 成功时返回 200(或 302 重定向——均可)。
+        // Cookie 存储之后现在保存了 JSESSIONID + XSRF token,供后续请求使用。
         Ok(())
     }
 
-    /// GET /rest/api/2/issue/{key} -> numeric id.
+    /// GET /rest/api/2/issue/{key} → 数字 id。
     pub fn issue_id(&self, issue_key: &str) -> Result<u64> {
         let url = format!("{}/rest/api/2/issue/{}", self.base_url, issue_key);
         let resp = self
@@ -139,15 +135,14 @@ impl TempoClient {
             .with_context(|| format!("issue {issue_key} id '{}' is not numeric", j.id))
     }
 
-    /// The `started` times of this issue's worklogs on `date`.
+    /// 该 issue 在 `date` 上所有工时的 `started` 时间。
     ///
-    /// Verified against the live server: `POST {search_path}` with body
-    /// `{"worker":["<worker>"], "from":"YYYY-MM-DD", "to":"YYYY-MM-DD"}`.
-    /// `worker` is a string array; `from`/`to` are date-only (a LocalDate).
-    /// The endpoint ignores issue filters, so we filter client-side by
-    /// `issue.id` AND `started` date (both must match). An entry whose
-    /// `started` cannot be parsed yields `None` — callers must treat that
-    /// conservatively (assume the entry blocks the write).
+    /// 已在线上服务器验证:`POST {search_path}`,请求体为
+    /// `{"worker":["<worker>"], "from":"YYYY-MM-DD", "to":"YYYY-MM-DD"}`。
+    /// `worker` 是字符串数组;`from`/`to` 只到日期(LocalDate)。
+    /// 该端点忽略 issue 过滤条件,故需在客户端按 `issue.id` 且 `started` 日期
+    /// 两者都匹配来过滤。无法解析 `started` 的条目返回 `None` — 调用方必须保守处理
+    /// (视为该条目的存在会阻塞写入)。
     pub fn worklog_started_times(
         &self,
         issue_id: u64,
@@ -189,14 +184,12 @@ impl TempoClient {
             .collect())
     }
 
-    /// Create a worklog on issue `issue_id` for `seconds`, with `comment` as the
-    /// daily-report body, started at `started`.
+    /// 在 issue `issue_id` 上为 `seconds` 秒创建工时,`comment` 作为日报正文,started 为 `started`。
     ///
-    /// Verified against the live server: `POST /rest/tempo-timesheets/{v}/worklogs`
-    /// with body `{ "originTaskId": <issueId>, "worker": "<worker>",
-    /// "started": "YYYY-MM-DD HH:MM:SS.000", "timeSpentSeconds": <n>, "comment": "<text>" }`.
-    /// (The bean `TimesheetWorklogBean` does NOT accept `issueId`/`billable`/
-    /// `locationId`/`timeSpent` — `originTaskId` and `timeSpentSeconds` are used.)
+    /// 已在线上服务器验证:`POST /rest/tempo-timesheets/{v}/worklogs`,请求体为
+    /// `{ "originTaskId": <issueId>, "worker": "<worker>",
+    /// "started": "YYYY-MM-DD HH:MM:SS.000", "timeSpentSeconds": <n>, "comment": "<text>" }`。
+    /// (`TimesheetWorklogBean` 不接受 `issueId`/`billable`/`locationId`/`timeSpent` — 使用 `originTaskId` 与 `timeSpentSeconds`。)
     pub fn create_worklog(
         &self,
         issue_id: u64,
@@ -209,7 +202,7 @@ impl TempoClient {
             "{}/rest/tempo-timesheets/{}/worklogs",
             self.base_url, self.version
         );
-        // The server expects a millisecond timestamp "YYYY-MM-DD HH:MM:SS.000".
+        // 服务器期望毫秒级时间戳 "YYYY-MM-DD HH:MM:SS.000"。
         let started = if started.contains('.') {
             started.to_string()
         } else {
@@ -230,7 +223,7 @@ impl TempoClient {
         if !status.is_success() {
             bail!("create worklog returned {status}: {text}");
         }
-        // Best-effort: read the created worklog id from the response.
+        // 尽力而为:从响应中读取创建的工时 id。
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(id) = v
                 .get("tempoWorklogId")
@@ -243,8 +236,8 @@ impl TempoClient {
         Ok(0)
     }
 
-    /// Quick reachability probe (used by the readiness check), <=5s budget.
-    /// Fails on connection error or any other non-2xx.
+    /// 快速可达性探测(就绪检查使用),预算 <=5s。
+    /// 连接错误或任何非 2xx 均失败。
     pub fn reachable(&self) -> Result<()> {
         let url = format!("{}/rest/api/2/myself", self.base_url);
         let resp = self
@@ -286,14 +279,14 @@ mod tests {
 
     #[test]
     fn issue_id_parses() {
-        // /rest/api/2/issue returns id as a string.
+        // /rest/api/2/issue 返回的 id 是字符串。
         let v: IssueJson = serde_json::from_str(r#"{"id":"155324","key":"BKAIZSKXM-5"}"#).unwrap();
         assert_eq!(v.id.parse::<u64>().unwrap(), 155324);
     }
 
     #[test]
     fn worklog_search_parses_sample_shape() {
-        // Mirror of the user's real response shape.
+        // 复刻用户真实响应的结构。
         let json = r#"[
             {"timeSpentSeconds":28800,"issue":{"id":155324,"key":"BKAIZSKXM-5"},"started":"2026-09-01 09:00:00.000"}
         ]"#;
@@ -312,7 +305,7 @@ mod tests {
             parse_started_time("2026-09-01 18:00:00.000"),
             Some(NaiveTime::from_hms_opt(18, 0, 0).unwrap())
         );
-        // The server sends ".000"; a missing fraction also parses (`%.f`).
+        // 服务器发送 ".000";缺少小数部分也能解析(`%.f`)。
         assert_eq!(
             parse_started_time("2026-09-01 18:00:00"),
             Some(NaiveTime::from_hms_opt(18, 0, 0).unwrap())

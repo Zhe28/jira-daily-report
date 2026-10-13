@@ -1,5 +1,5 @@
-//! Resident scheduling: startup catch-up + daily loop at the configured time.
-//! The blocking pipeline runs on the async runtime via `spawn_blocking`.
+//! 常驻调度:启动时补跑 + 按配置时间每日循环。
+//! 阻塞式流水线通过 `spawn_blocking` 运行在异步运行时上。
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -10,12 +10,12 @@ use crate::hotconfig::HotConfig;
 use crate::pipeline::{self, WorklogStore};
 use crate::reporter::AIClient;
 
-/// Today's target date = yesterday (local).
+/// 当日的目标日期 = 昨天(本地时区)。
 pub fn yesterday() -> chrono::NaiveDate {
     Local::now().date_naive() - chrono::Duration::days(1)
 }
 
-/// Next occurrence of `t` from now (today or tomorrow), as a chrono DateTime.
+/// 从当前起 `t` 的下一次出现时间(今天或明天),以 chrono DateTime 表示。
 pub fn next_trigger(t: NaiveTime) -> chrono::DateTime<chrono::Local> {
     let now = Local::now();
     let today_at = now.date_naive().and_time(t);
@@ -45,7 +45,7 @@ fn read_clients(slots: &ClientSlots) -> (Arc<dyn AIClient>, Arc<dyn WorklogStore
     )
 }
 
-/// Run the pipeline for `date`, blocking (run on a worker thread).
+/// 为 `date` 运行流水线,阻塞式执行(运行在工作线程上)。
 /// 客户端每轮从槽位读取（PUT /api/config 热切换后下一轮生效）。
 fn run_for(
     hot: Arc<HotConfig>,
@@ -69,8 +69,7 @@ fn run_for(
     }
 }
 
-/// Resident loop: catch up on startup if past today's check time, then sleep to
-/// each subsequent trigger.
+/// 常驻循环:启动时若已过今日检查时间则补跑,之后睡眠直到下一个触发点。
 pub fn run_resident(
     hot: Arc<HotConfig>,
     slots: ClientSlots,
@@ -81,7 +80,7 @@ pub fn run_resident(
     let now = Local::now();
     let today_at = now.date_naive().and_time(check);
 
-    // Startup catch-up: if we've already passed today's check time, run yesterday now.
+    // 启动补跑:若已越过今日的 check_time,立即处理昨日。
     if now.naive_local() >= today_at {
         tracing::info!("启动时已过今日 {}，补跑昨日 {}", check, yesterday());
         run_for(hot.clone(), yesterday(), &slots, false, &*on_done);
@@ -96,8 +95,7 @@ pub fn run_resident(
         let delay = (next - Local::now())
             .to_std()
             .unwrap_or_else(|_| Duration::from_secs(3600));
-        // The day the pipeline will fill once the trigger fires (it uses `yesterday()`
-        // at trigger time).
+        // 触发点 firing 后流水线将补填的日期(它在触发时刻调用 `yesterday()`)。
         let target = next.date_naive() - chrono::Duration::days(1);
         crate::notify::info(
             "下次写日志",

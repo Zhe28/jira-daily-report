@@ -1,9 +1,7 @@
-//! Alerting: always print to the CLI; additionally, best-effort, raise a
-//! Windows system toast. The toast never blocks the pipeline and silently
-//! degrades to CLI-only if it's unavailable (no Windows / no PowerShell /
-//! user dismissed the consent prompt).
+//! 告警:总是输出到 CLI;此外尽力弹出 Windows 系统 toast。toast 永远不会阻塞
+//! 流水线,若不可用(非 Windows/无 PowerShell/用户拒绝了授权提示)则静默降级为仅 CLI。
 
-/// Fire an alert: CLI + (Windows) system toast.
+/// 触发告警:CLI +(Windows)系统 toast。
 pub fn notify(title: &str, body: &str) {
     tracing::warn!("[ALERT] {title}: {body}");
     eprintln!("\n[ALERT] {title}: {body}\n");
@@ -12,7 +10,7 @@ pub fn notify(title: &str, body: &str) {
     send_toast(title, body);
 }
 
-/// Informational hint: CLI (info) + best-effort Windows toast.
+/// 信息提示:CLI(info)+尽力而为的 Windows toast。
 pub fn info(title: &str, body: &str) {
     tracing::info!("[提示] {title}: {body}");
     println!("\n[提示] {title}: {body}\n");

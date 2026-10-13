@@ -1,6 +1,5 @@
-//! End-to-end test of the git collector against a real temporary git repo with
-//! commits placed at controlled dates/times, to verify the 09:00–18:00 window
-//! filter and day selection work against actual `git`.
+//! 针对带受控日期/时间提交的真实临时 git 仓库的 git 收集器端到端测试,验证
+//! 09:00–18:00 窗口过滤与日期选择在真实的 `git` 下是否有效。
 
 use std::path::Path;
 use std::process::Command;
@@ -23,9 +22,8 @@ fn git(cwd: &Path, args: &[&str]) {
     );
 }
 
-/// Build a commit date string at the *local* timezone offset, so the test is
-/// deterministic regardless of the machine's TZ (the collector converts commit
-/// times to Local).
+/// 按*本地*时区偏移构造提交日期字符串,使测试在任何机器的 TZ 下都确定
+/// (收集器会将提交时间转换为 Local)。
 fn local_date(day: &str, hhmm: &str) -> String {
     let offset = chrono::Local::now().offset().to_string();
     format!("{day}T{hhmm}:00{offset}")
@@ -48,8 +46,7 @@ fn commit(cwd: &Path, date: &str, msg: &str, file: &str, content: &str) {
     );
 }
 
-/// Commit with an explicit committer identity + date (used to simulate
-/// commits made by another person or on another branch).
+/// 显式指定提交者身份+日期的提交(用于模拟他人或另一分支上的提交)。
 fn commit_as(
     cwd: &Path,
     date: &str,
@@ -101,7 +98,7 @@ fn window() -> (chrono::NaiveDate, NaiveTime, NaiveTime) {
 fn collector_filters_by_day_and_window() {
     let dir = tmp_repo("day-window");
 
-    // A: target day, in window (10:00)  -> included
+    // A:目标日、窗口内(10:00) → 纳入
     commit(
         &dir,
         &local_date("2026-09-09", "10:00"),
@@ -109,7 +106,7 @@ fn collector_filters_by_day_and_window() {
         "a.txt",
         "a",
     );
-    // B: target day, out of window (19:00) -> excluded
+    // B:目标日、窗口外(19:00) → 排除
     commit(
         &dir,
         &local_date("2026-09-09", "19:00"),
@@ -117,7 +114,7 @@ fn collector_filters_by_day_and_window() {
         "b.txt",
         "b",
     );
-    // C: previous day, in window -> excluded (different day)
+    // C:前一日、窗口内 → 排除(不同日期)
     commit(
         &dir,
         &local_date("2026-09-08", "10:00"),
@@ -136,7 +133,7 @@ fn collector_filters_by_day_and_window() {
         "expected only commit A, got {subjects:?}"
     );
 
-    // The kept commit should have a non-empty patch and counted lines.
+    // 保留下来的提交应有非空 patch 且行数被计数。
     let a = &rc.commits[0];
     assert!(!a.patch.is_empty());
     assert!(a.added >= 1, "added should be >=1, got {}", a.added);
@@ -150,7 +147,7 @@ fn collector_overtime_collects_until_end_of_day() {
     let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
     let end_of_day = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
 
-    // P: previous day evening -> excluded (different day)
+    // P:前一日晚间 → 排除(不同日期)
     commit(
         &dir,
         &local_date("2026-09-08", "20:00"),
@@ -158,7 +155,7 @@ fn collector_overtime_collects_until_end_of_day() {
         "p.txt",
         "p",
     );
-    // M: just before work_end (17:59) -> excluded from overtime
+    // M:紧邻 work_end 之前(17:59) → 不计入加班
     commit(
         &dir,
         &local_date("2026-09-09", "17:59"),
@@ -166,7 +163,7 @@ fn collector_overtime_collects_until_end_of_day() {
         "m.txt",
         "m",
     );
-    // X: exactly at work_end (18:00:00) -> included
+    // X:恰好在 work_end(18:00:00) → 纳入
     commit(
         &dir,
         &local_date("2026-09-09", "18:00"),
@@ -174,7 +171,7 @@ fn collector_overtime_collects_until_end_of_day() {
         "x.txt",
         "x",
     );
-    // B: 19:00 -> included
+    // B:19:00 → 纳入
     commit(
         &dir,
         &local_date("2026-09-09", "19:00"),
@@ -182,7 +179,7 @@ fn collector_overtime_collects_until_end_of_day() {
         "b.txt",
         "b",
     );
-    // N: next morning (2026-09-10 00:30) -> excluded (different day)
+    // N:次日清晨(2026-09-10 00:30) → 排除(不同日期)
     commit(
         &dir,
         &local_date("2026-09-10", "00:30"),
@@ -190,7 +187,7 @@ fn collector_overtime_collects_until_end_of_day() {
         "n.txt",
         "n",
     );
-    // L: late night 23:59 -> included
+    // L:深夜 23:59 → 纳入
     commit(
         &dir,
         &local_date("2026-09-09", "23:59"),
@@ -209,14 +206,13 @@ fn collector_overtime_collects_until_end_of_day() {
         "expected only the target-day >=18:00 commits, got {subjects:?}"
     );
 
-    // Kept commits carry patches and counted lines.
+    // 保留的提交携带 patch 且行数被计数。
     for c in &rc.commits {
         assert!(!c.patch.is_empty(), "empty patch for {}", c.subject);
         assert!(c.added >= 1, "added should be >=1, got {}", c.added);
     }
 
-    // The normal-window pass sees only the 17:59 commit; the >=18:00 ones
-    // stay out of it (the two windows are disjoint).
+    // 常规窗口段只看到 17:59 的提交;>=18:00 的不在其中(两个窗口互斥)。
     let (d, start, end) = window();
     let rc_normal = git_collector::collect_for(&dir, "me@corp.com", d, start, end);
     let normal_subjects: Vec<&str> = rc_normal
@@ -248,7 +244,7 @@ fn non_git_dir_reports_error() {
 fn finds_commits_on_branches_not_checked_out() {
     let dir = tmp_repo("nonhead");
 
-    // Baseline commit on the default branch, outside the target day.
+    // 默认分支上的基线提交,位于目标日之外。
     commit(
         &dir,
         &local_date("2026-09-07", "10:00"),
@@ -257,7 +253,7 @@ fn finds_commits_on_branches_not_checked_out() {
         "base",
     );
 
-    // Work happens on a feature branch, inside the window.
+    // 工作在 feature 分支上进行,位于窗口内。
     git(&dir, &["checkout", "-qb", "feature"]);
     commit(
         &dir,
@@ -266,7 +262,7 @@ fn finds_commits_on_branches_not_checked_out() {
         "feat.txt",
         "feat",
     );
-    // ...and a colleague committed on the same branch that day (must be excluded).
+    // …同一天同事在同一分支上有提交(必须被排除)。
     commit_as(
         &dir,
         &local_date("2026-09-09", "11:00"),
@@ -277,7 +273,7 @@ fn finds_commits_on_branches_not_checked_out() {
         "colleague@corp.com",
     );
 
-    // Back to the default branch: HEAD no longer sees the feature commits.
+    // 切回默认分支:HEAD 不再能看到 feature 提交。
     git(&dir, &["checkout", "-q", "-"]);
 
     let (date, start, end) = window();
@@ -295,8 +291,8 @@ fn finds_commits_on_branches_not_checked_out() {
 
 #[test]
 fn explicit_email_overrides_git_config() {
-    // A repo whose git config says one identity; collect_for with a different
-    // explicit email must pick up only commits made by that email.
+    // git config 中声明了一个身份的仓库;用不同的显式邮箱调用 collect_for
+    // 应只拾取该邮箱的提交。
     let dir = tmp_repo("explicit");
     commit(
         &dir,
@@ -320,7 +316,7 @@ fn explicit_email_overrides_git_config() {
     let subjects: Vec<&str> = rc.commits.iter().map(|c| c.subject.as_str()).collect();
     assert_eq!(subjects, vec!["work under explicit email"]);
 
-    // And the git-config identity (me@corp.com) finds nothing that day.
+    // 而 git-config 身份(me@corp.com)当天找不到任何内容。
     let rc2 = git_collector::collect_for(&dir, "me@corp.com", date, start, end);
     assert!(rc2.commits.is_empty());
 
@@ -341,13 +337,13 @@ fn git_identity_prefers_repo_local_then_global() {
         &dir,
         &["config", "--global", "user.email", "global@corp.com"],
     );
-    // The repo-local value must win over the global one.
+    // 仓库级值必须优先于全局值。
     assert_eq!(
         git_collector::git_identity(&dir).as_deref(),
         Some("local@corp.com")
     );
 
-    // In a dir without a repo-local value, the global one is used.
+    // 在没有仓库级值的目录中,使用全局值。
     let other = std::env::temp_dir().join(format!("gitcol-identity-other-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&other);
     std::fs::create_dir_all(&other).unwrap();

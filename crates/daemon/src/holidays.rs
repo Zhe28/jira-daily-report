@@ -1,5 +1,4 @@
-//! Load + validate the external holidays JSON, and answer "is this date a
-//! statutory holiday?".
+//! 加载并校验外部节假日 JSON,并回答"该日期是否为法定节假日?"。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -7,15 +6,14 @@ use std::path::Path;
 use chrono::NaiveDate;
 use serde::Deserialize;
 
-/// Outcome of a holiday lookup.
+/// 节假日查询的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HolidayCheck {
-    /// The date is a known holiday (and its name, if any).
+    /// 该日期是已知节假日(附名称,如有)。
     Holiday(String),
-    /// Holidays were loaded and the date is not one of them.
+    /// 节假日已加载,但该日期不在其中。
     NotHoliday,
-    /// No holiday data could be loaded (missing/corrupt) — caller should
-    /// degrade to "skip only if no commits" and warn the user.
+    /// 无法加载节假日数据(缺失/损坏)—调用方应降级为"仅在无提交时跳过"并向用户发出警告。
     Unavailable(String),
 }
 
@@ -33,7 +31,7 @@ struct HolidayEntry {
     name: Option<String>,
 }
 
-/// Loaded holiday data keyed by date.
+/// 按日期索引的已加载节假日数据。
 pub struct HolidaySet {
     dates: HashSet<NaiveDate>,
     names: std::collections::HashMap<NaiveDate, String>,
@@ -64,7 +62,7 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| format!("bad date '{}': {}", s, e))
 }
 
-/// Validate and ingest one year file's JSON.
+/// 校验并导入某一年份文件的 JSON。
 fn ingest(
     text: &str,
     source: &str,
@@ -89,14 +87,14 @@ fn ingest(
     Ok(out)
 }
 
-/// Load holiday data from a directory (`holidays-<year>.json` files, merged) or a
-/// single file path. Missing → empty (NotHoliday). Corrupt → error.
+/// 从目录(`holidays-<年份>.json` 文件合并)或单个文件路径加载节假日数据。
+/// 缺失 → 空集(NotHoliday);损坏 → 错误。
 pub fn load_for_date(path: &Path) -> Result<HolidaySet, String> {
     let mut set = HolidaySet::empty();
 
     let mut sources = Vec::new();
     if path.is_dir() {
-        // Merge all holidays-*.json in the dir; membership is checked per-date.
+        // 合并目录中所有 holidays-*.json;按日期逐个判断是否命中。
         for entry in
             std::fs::read_dir(path).map_err(|e| format!("reading dir {}: {}", path.display(), e))?
         {
@@ -121,7 +119,7 @@ pub fn load_for_date(path: &Path) -> Result<HolidaySet, String> {
         return Ok(set);
     }
 
-    // Not a directory: treat `path` as a single holidays file.
+    // 不是目录:将 path 视为单个节假日文件处理。
     if path.is_file() {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -135,7 +133,7 @@ pub fn load_for_date(path: &Path) -> Result<HolidaySet, String> {
         return Ok(set);
     }
 
-    // Neither dir nor file — no holiday data available (degrades gracefully).
+    // 既非目录也非文件——没有可用的节假日数据(优雅降级)。
     Ok(set)
 }
 
@@ -145,7 +143,7 @@ fn extract_year(name: &str) -> Option<i32> {
     y.parse().ok()
 }
 
-/// High-level: answer is_holiday for a date, mapping load failures to Unavailable.
+/// 高层接口:回答某日期是否节假日,将加载失败映射为 Unavailable。
 pub fn is_holiday(path: &Path, d: NaiveDate) -> HolidayCheck {
     match load_for_date(path) {
         Ok(set) => match set.is_holiday(d) {

@@ -3,6 +3,7 @@ name: release
 on:
   push:
     branches: [master]
+  workflow_dispatch:   # 手动触发入口
 
 permissions:
   contents: write
@@ -60,3 +61,9 @@ jobs:
           tag_name: ${{ env.VERSION }}
           files: dist/${{ env.ZIP_NAME }}
           fail_on_unmatched_files: true
+          generate_release_notes: true   # 自动生成 What's Changed
+          append_body: true              # 追加自定义 body 到自动生成内容之后
+          body: |
+            ## 📦 下载
+
+            下载下方附件 `daily-report-${{ env.VERSION }}-windows-x64.zip`，解压后运行 `daily-report.exe`。
